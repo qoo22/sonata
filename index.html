@@ -40,9 +40,13 @@ function wrap(text,cx,y,maxw,lh){ let line="",yy=y; for(const c of [...text]){ c
   if(g.measureText(t).width>maxw && line){ g.fillText(line,cx,yy); line=c; yy+=lh; } else line=t; } if(line) g.fillText(line,cx,yy); }
 
 // ---------- audio ----------
-let AC=null; const bgmEl=new Audio(); bgmEl.loop=true; bgmEl.volume=0.6; bgmEl.preload="auto";
+let AC=null, seBus=null; const bgmEl=new Audio(); bgmEl.loop=true; bgmEl.volume=0.6; bgmEl.preload="auto";
 let pendingBGM=null;            // 再生待ちのBGM（AC未解放時に保留）
+function seDst(){ return seBus||(AC&&AC.destination); }   // 効果音はマスターSEバス経由（音量調整用）
+function applyAudioCfg(){ try{ bgmEl.volume=CFG().bgm; }catch(e){} if(seBus){ try{ seBus.gain.value=CFG().se; }catch(e){} } }
 function audioInit(){ if(!AC){ try{AC=new (window.AudioContext||window.webkitAudioContext)();}catch(e){} }
+  if(AC&&!seBus){ try{ seBus=AC.createGain(); seBus.gain.value=CFG().se; seBus.connect(AC.destination); }catch(e){} }
+  applyAudioCfg();
   if(AC&&AC.state==="suspended"){ AC.resume().then(()=>{ if(bgmEl.src&&bgmEl.paused){ const p=bgmEl.play(); if(p&&p.catch)p.catch(()=>{}); } }); }
   // 保留中のBGMがあれば鳴らす
   if(pendingBGM){ const q=pendingBGM; pendingBGM=null; playBGM(q.name,q.arrange); } }
@@ -54,7 +58,7 @@ addEventListener("keydown",audioUnlock);
 function bombSound(){ if(!AC)return; const t=AC.currentTime,o=AC.createOscillator(),gn=AC.createGain();
   o.type="sawtooth"; o.frequency.setValueAtTime(600,t); o.frequency.exponentialRampToValueAtTime(80,t+0.5);
   gn.gain.setValueAtTime(0.25,t); gn.gain.exponentialRampToValueAtTime(0.0001,t+0.6);
-  o.connect(gn).connect(AC.destination); o.start(t); o.stop(t+0.6); }
+  o.connect(gn).connect(seDst()); o.start(t); o.stop(t+0.6); }
 let mediaSrc=null, filtNode=null;
 // file:// で開くと createMediaElementSource 経由のメディアは無音になるため、その時はグラフを使わず直接再生する
 let graphBlocked=(location.protocol==="file:");
@@ -69,7 +73,7 @@ function voiceBlip(ln){ if(!AC)return; let base=(ln.who==="boss")?(280+stageIdx*
   const f=base*(0.97+Math.random()*0.06), t=AC.currentTime, o=AC.createOscillator(), g2=AC.createGain();
   o.type=(ln.who==="boss")?"square":"triangle"; o.frequency.value=f;
   g2.gain.setValueAtTime(0.0001,t); g2.gain.exponentialRampToValueAtTime(0.05,t+0.005); g2.gain.exponentialRampToValueAtTime(0.0001,t+0.07);
-  o.connect(g2).connect(AC.destination); o.start(t); o.stop(t+0.08); }
+  o.connect(g2).connect(seDst()); o.start(t); o.stop(t+0.08); }
 function playBGM(name,arrange){ try{
     if(AC&&AC.state==="suspended") AC.resume();
     bgmEl.pause(); bgmEl.src="assets/"+name+".wav"; bgmEl.currentTime=0; try{bgmEl.load();}catch(e){}
@@ -83,7 +87,12 @@ function stopBGM(){ try{ bgmEl.pause(); }catch(e){} }
 const keys={};
 addEventListener("keydown",e=>{ const k=e.key.toLowerCase(); keys[k]=true;
   if(["arrowup","arrowdown","arrowleft","arrowright"," "].includes(k))e.preventDefault(); audioInit();
-  if(state==="title"&&(k==="z"||k==="enter")) state="select";
+  if(state==="play"&&(k==="escape"||k==="p")){ state="pause"; pauseSel=0; }
+  else if(state==="pause"){ if(k==="arrowup") pauseSel=(pauseSel-1+PAUSEITEMS.length)%PAUSEITEMS.length; else if(k==="arrowdown") pauseSel=(pauseSel+1)%PAUSEITEMS.length; else if(k==="z"||k==="enter") pauseSelect(); else if(k==="escape"||k==="p") state="play"; }
+  else if(state==="settings"){ if(k==="arrowup") cfgRow=(cfgRow-1+CFGROWS.length)%CFGROWS.length; else if(k==="arrowdown") cfgRow=(cfgRow+1)%CFGROWS.length; else if(k==="arrowleft") cfgAdjust(-1); else if(k==="arrowright") cfgAdjust(1); else if(k==="z"||k==="enter"||k==="escape"||k==="x") cfgBack(); }
+  else if(state==="title"){ const m=titleMenu(); if(k==="arrowup") titleSel=(titleSel-1+m.length)%m.length; else if(k==="arrowdown") titleSel=(titleSel+1)%m.length;
+    else if(k==="z"||k==="enter"){ const sel=m[titleSel%m.length][0]; if(sel==="records"){ state="records"; musicSel=0; } else if(sel==="settings"){ cfgFrom="title"; cfgRow=0; state="settings"; } else { MODE=sel; state="select"; } } }
+  else if(state==="records"){ if(k==="arrowleft") musicSel=(musicSel-1+MUSIC.length)%MUSIC.length; else if(k==="arrowright") musicSel=(musicSel+1)%MUSIC.length; else if(k==="z"||k==="enter") playBGM(MUSIC[musicSel].file,false); else if(k==="escape"||k==="x"){ stopBGM(); state="title"; } }
   else if(state==="select"){ if(k==="arrowleft") selIdx=(selIdx-1+CHARS.length)%CHARS.length;
     else if(k==="arrowright") selIdx=(selIdx+1)%CHARS.length;
     else if(k==="arrowup") diffIdx=(diffIdx-1+DIFF.length)%DIFF.length;
@@ -106,13 +115,17 @@ function ctp(t){ const r=cv.getBoundingClientRect(),sx=W/r.width,sy=H/r.height; 
 function inBombBtn(p){ return p.x>W-90&&p.y>H-90; }
 // メニュー/会話の送り（マウス・最初のタッチ共通）
 function tapMenu(p){
-  if(state==="title"){ state="select"; }
+  if(state==="title"){ const m=titleMenu(),baseY=H*0.46,step=H*0.062; let idx=Math.round((p.y-baseY+step*0.5)/step); idx=Math.max(0,Math.min(m.length-1,idx)); titleSel=idx; const sel=m[idx][0]; if(sel==="records"){ state="records"; musicSel=0; } else { MODE=sel; state="select"; } }
+  else if(state==="records"){ if(p.y<H*0.12){ stopBGM(); state="title"; } else if(p.x<W*0.3) musicSel=(musicSel-1+MUSIC.length)%MUSIC.length; else if(p.x>W*0.7) musicSel=(musicSel+1)%MUSIC.length; else playBGM(MUSIC[musicSel].file,false); }
+  else if(state==="pause"){ const baseY=H*0.44,step=36; let idx=Math.round((p.y-baseY+step*0.5)/step); idx=Math.max(0,Math.min(PAUSEITEMS.length-1,idx)); pauseSel=idx; pauseSelect(); }
+  else if(state==="settings"){ let idx=Math.round((p.y-H*0.24)/46); if(idx<0||idx>=CFGROWS.length){ cfgBack(); return; } cfgRow=idx; const r=CFGROWS[cfgRow]; if(r[4]===1) cfgAdjust(CFG()[r[0]]>0?-1:1); else cfgAdjust(p.x<W/2?-1:1); }
   else if(state==="select"){ if(p.y<H*0.14){ diffIdx=(diffIdx+1)%DIFF.length; } else if(p.x<W*0.28) selIdx=(selIdx-1+CHARS.length)%CHARS.length; else if(p.x>W*0.72) selIdx=(selIdx+1)%CHARS.length; else { CHAR=CHARS[selIdx]; startGame(); } }
   else if(state==="prologue"){ proAdvance(); } else if(state==="intro"){ introAdvance(); } else if(state==="after"){ afterAdvance(); } else if(state==="ending"){ edAdvance(); } else if(state==="credits"){ state="result"; } else if(state==="result"){ startGame(); }
 }
 // ---- マウス（デスクトップ：追従移動）----
 function onMouseDown(ev){ audioInit(); const p=cpos(ev);
   if(state!=="play"){ tapMenu(p); ev.preventDefault(); return; }
+  if(p.x>W-44&&p.y<44){ state="pause"; pauseSel=0; ev.preventDefault(); return; }   // ポーズボタン
   if(inBombBtn(p)) bombBtn=true; else { pointer.active=true; pointer.x=p.x; pointer.y=p.y; }
   ev.preventDefault(); }
 function onMouseMove(ev){ if(!pointer.active)return; const p=cpos(ev); pointer.x=p.x; pointer.y=p.y; ev.preventDefault(); }
@@ -121,6 +134,7 @@ function onMouseUp(){ pointer.active=false; bombBtn=false; }
 function onTouchStart(ev){ audioInit(); touchMode=true;
   for(const t of ev.changedTouches){ const p=ctp(t);
     if(state!=="play"){ tapMenu(p); continue; }
+    if(p.x>W-44&&p.y<44){ state="pause"; pauseSel=0; continue; }   // ポーズボタン
     if(inBombBtn(p)){ bombBtn=true; bombTouchId=t.identifier; }
     else if(moveTouch===null){ moveTouch={id:t.identifier,lx:p.x,ly:p.y,dx:0,dy:0}; }
     else { bombTap=true; }   // 2本目以降のタップ＝移動しながらでもボム発動
@@ -135,7 +149,7 @@ cv.addEventListener("touchstart",onTouchStart,{passive:false}); cv.addEventListe
 
 // ---------- bullets ----------
 let bullets=[];
-function fire(x,y,spd,ang,r,col,opt){ spd*=(DIFF[diffIdx]?DIFF[diffIdx].spd:1); const a=ang*Math.PI/180; const b={x,y,vx:Math.cos(a)*spd,vy:Math.sin(a)*spd,
+function fire(x,y,spd,ang,r,col,opt){ spd*=(DIFF[diffIdx]?DIFF[diffIdx].spd:1)*(typeof spdMul!=="undefined"?spdMul:1); const a=ang*Math.PI/180; const b={x,y,vx:Math.cos(a)*spd,vy:Math.sin(a)*spd,
   ang,r,col,age:0,grazed:false,enemy:true,move:"lin",p0:0,p1:0,p2:0}; if(opt)Object.assign(b,opt); bullets.push(b); }
 function fireShot(x,y,spd,ang,r){ fireP(x,y,spd,ang,r,1); }
 function fireP(x,y,spd,ang,r,dmg,opt){ const a=ang*Math.PI/180; const b={x,y,vx:Math.cos(a)*spd,vy:Math.sin(a)*spd,ang,r,
@@ -173,8 +187,8 @@ function dropCluster(big){ // ボス撃破時のドロップ
 }
 function clearToStars(){ let n=0; for(const b of bullets){ if(b.enemy&&!b.dead){ b.dead=true; if(n<48){ spawnItem(b.x,b.y,"star"); n++; } } } }
 function collectItem(it){ const k=it.kind;
-  if(k==="P"){ player.power=Math.min(MAXPOW,player.power+1); }
-  else if(k==="F"){ player.power=MAXPOW; }
+  if(k==="P"){ player.power=Math.min(MAXPOW,player.power+1); if(player.power>=MAXPOW) ach("fullpower"); }
+  else if(k==="F"){ player.power=MAXPOW; ach("fullpower"); }
   else if(k==="bomb"){ if(++player.bombFrag>=5){ player.bombFrag=0; player.bombs++; } }
   else if(k==="life"){ if(++player.lifeFrag>=5){ player.lifeFrag=0; player.lives++; } }
   else if(k==="1up"){ player.lives++; whiteFlash=Math.max(whiteFlash,0.2); }       // 残機まるごと1UP
@@ -194,6 +208,28 @@ function updateItems(dt){
   }
   items=items.filter(i=>!i.dead);
 }
+
+// ---------- 道中（雑魚ウェーブ） ----------
+let enemies=[], waveOn=false, waveT=0, waveSpawnT=0, waveIdx=0;
+let comboCount=0, comboT=0;   // 雑魚連続撃破チェイン
+const WAVE_TIME=18;
+function spawnWave(){ waveIdx++; const n=5, fromL=(waveIdx%2===0), hp=16+stageIdx*5;
+  for(let i=0;i<n;i++){ const ex=fromL?(46+i*((W-92)/(n-1))):(W-46-i*((W-92)/(n-1)));
+    enemies.push({x:ex,y:-24,vy:96,hp:hp,t:0,fireT:0.7+i*0.12,col:(i%2?ST.cB:ST.cA),tgt:80+Math.random()*110,dead:false}); } }
+function killEnemy(e){ comboCount++; comboT=2.2; const mult=1+Math.min(comboCount,30)*0.1;   // チェイン倍率
+  addBurst(e.x,e.y,ST?ST.cB:"#fff",12,170); addSpark(e.x,e.y,"#ffe96a"); hitSE(); score+=Math.round(500*mult);
+  if(Math.random()<0.6) spawnItem(e.x,e.y,Math.random()<0.5?"point":"P"); }
+function updateEnemies(dt){ for(const e of enemies){ if(e.dead)continue; e.t+=dt;
+    if(e.hp<=0){ e.dead=true; killEnemy(e); continue; }
+    if(e.y<e.tgt){ e.y+=e.vy*dt; }
+    else { e.x+=Math.sin(e.t*1.6)*46*dt; e.fireT-=dt; if(e.fireT<=0){ e.fireT=1.3; const a=angTo(e.x,e.y,player.x,player.y); for(let k=-1;k<=1;k++) fire(e.x,e.y,150,a+k*8,5,ST.cA); } }
+    if(e.t>6.5) e.y+=44*dt;
+    if(e.y>H+30) e.dead=true; }
+  if(enemies.length) enemies=enemies.filter(e=>!e.dead); }
+function waveUpdate(dt){ waveT-=dt; waveSpawnT-=dt;
+  if(waveSpawnT<=0 && waveT>3){ spawnWave(); waveSpawnT=2.2; }
+  updateEnemies(dt);
+  if(waveT<=0 && enemies.length===0){ waveOn=false; bossNext(); } }
 
 // ---------- pattern factories (色は現在ステージ ST から) ----------
 function gAimed(o){ o=o||{}; const n=o.n||3,sp=o.spread||12,spd=o.spd||160,iv=o.iv||0.5;
@@ -312,6 +348,13 @@ const STAGES=[
           {name:"光符「虹を編む」",hp:280,time:32,spell:true,g:gUtaWeave()},
           {name:"終幕符「燐の音は、巡る」",hp:340,time:40,spell:true,g:gUtaFinale()}]},
 ];
+// EXステージ（隠しボス）— ALL CLEARで解放
+const EXSTAGE={ name:"狂想 燐ノ巫", line:"よく来たね。……最後まで、付き合ってもらうよ。", bg:"bg6",boss:"boss6",cut:"cut6",cA:"#ff5ad0",cB:"#9a7bff",bpm:184,bgm:"bgm6",
+  phases:[{name:"狂導符「乱反する燐光」",hp:300,time:34,spell:true,g:gUtaWeave()},
+          {name:"狂時符「巻き戻る針の檻」",hp:340,time:36,spell:true,g:gNemuStop()},
+          {name:"終狂符「燐音、極まりて」",hp:420,time:46,spell:true,g:gUtaFinale()}] };
+const EXSHOUT=["ふふ、本気だね","まだまだ見せてあげる","その程度？","乱れて、乱れて","綺麗に避けるじゃない","ここからが狂想曲","燐の光、極めるよ"];
+const EXHALF=["ここからが本当の狂想","——極限を、どうぞ","全部、見せてあげる"];
 
 // ---------- playable characters（ショットタイプ選択） ----------
 const CHARS=[
@@ -486,6 +529,29 @@ let player, boss;
 // 手触り：ヒットストップ・画面揺れ・フラッシュ・パーティクル
 let freeze=0, shake=0, hurtFlash=0, whiteFlash=0, grazeMul=1, grazeMulT=0, microStopCD=0;
 let pichunT=0, pichunX=0, pichunY=0;   // 被弾＝ピチューン演出（白〜青白い閃光と粒）
+// スペルカード演出＋永続記録（やり込み）
+let spellResultT=0, spellResultText="", spellResultBonus=0;
+let runHitStage=false, runBombStage=false;   // 面ごと：被弾した／ボム使った
+let titleSel=0, musicSel=0;
+const ACHLIST=[["allclear","ALL CLEAR 達成"],["rushclear","ボスラッシュ クリア"],["exclear","EXステージ クリア"],["nomiss_stage","ノーミスで1面クリア"],["nobomb_stage","ノーボムで1面クリア"],["fullpower","フルパワー到達"],["spell10","スペル10枚取得"],["reso","共鳴解放を使った"]];
+const MUSIC=[]; for(let mi=0;mi<STAGES.length;mi++) MUSIC.push({name:(mi+1)+". "+STAGES[mi].name, file:STAGES[mi].bgm}); for(const mc of CHARS){ if(mc.edBgm) MUSIC.push({name:"ED: "+mc.name, file:mc.edBgm}); }
+function titleMenu(){ const m=[["story","はじめる（ストーリー）"],["rush","ボスラッシュ / スコアアタック"],["endless","エンドレス"]]; if(SAVE.ach.allclear) m.push(["ex","EXステージ（隠しボス）"]); m.push(["settings","設定"],["records","きろく / ミュージックルーム"]); return m; }
+// 設定・ポーズ
+let pauseSel=0, cfgRow=0, cfgFrom="title";
+const CFGROWS=[["bgm","BGM音量",0,1,0.1],["se","SE音量",0,1,0.1],["shake","画面の揺れ",0,1.5,0.25],["contrast","弾の高コントラスト",0,1,1],["hitbox","当たり判定 常時表示",0,1,1],["sens","パッド感度",0.6,2.0,0.15]];
+const PAUSEITEMS=[["resume","再開"],["settings","設定"],["restart","最初から"],["title","タイトルへ"]];
+function pauseSelect(){ const a=PAUSEITEMS[pauseSel%PAUSEITEMS.length][0];
+  if(a==="resume") state="play"; else if(a==="settings"){ cfgFrom="pause"; cfgRow=0; state="settings"; } else if(a==="restart"){ startGame(); } else { stopBGM(); state="title"; } }
+function cfgAdjust(d){ const r=CFGROWS[cfgRow]; let v=CFG()[r[0]]+d*r[4]; v=Math.max(r[2],Math.min(r[3],Math.round(v/r[4])*r[4])); CFG()[r[0]]=v; applyAudioCfg(); saveSave(); }
+function cfgBack(){ saveSave(); state=(cfgFrom==="pause")?"pause":"title"; }
+const SAVE_KEY="rinnekyo_save_v1";
+const CFG_DEF={bgm:0.6, se:0.9, shake:1, contrast:0, hitbox:0, sens:1.15};
+let SAVE={best:0, spells:{}, ach:{}, cfg:Object.assign({},CFG_DEF)};
+function CFG(){ return SAVE.cfg||(SAVE.cfg=Object.assign({},CFG_DEF)); }
+function loadSave(){ try{ const s=JSON.parse(localStorage.getItem(SAVE_KEY)||"null"); if(s){ SAVE.best=s.best||0; SAVE.spells=s.spells||{}; SAVE.ach=s.ach||{}; SAVE.cfg=Object.assign({},CFG_DEF,s.cfg||{}); SAVE.bestRush=s.bestRush||0; SAVE.bestEndless=s.bestEndless||0; SAVE.bestEx=s.bestEx||0; } }catch(e){} }
+function saveSave(){ try{ localStorage.setItem(SAVE_KEY,JSON.stringify(SAVE)); }catch(e){} }
+function ach(key){ if(!SAVE.ach[key]){ SAVE.ach[key]=true; saveSave(); } }
+loadSave();
 let parts=[];
 const HP_MUL=1.9;   // 自動ヒット増加分、ボスHP増量
 const DMG_MUL=3.0;  // 高耐久化に合わせ自機火力を底上げ（戦闘は長めでもダレない）
@@ -504,59 +570,78 @@ function drawParts(){ g.globalCompositeOperation="lighter"; for(const p of parts
 function pichun(){ if(!AC)return; const t=AC.currentTime;
   const o1=AC.createOscillator(),g1=AC.createGain(); o1.type="triangle"; o1.frequency.setValueAtTime(2200,t);
   g1.gain.setValueAtTime(0.0001,t); g1.gain.exponentialRampToValueAtTime(0.11,t+0.005); g1.gain.exponentialRampToValueAtTime(0.0001,t+0.05);
-  o1.connect(g1).connect(AC.destination); o1.start(t); o1.stop(t+0.06);
+  o1.connect(g1).connect(seDst()); o1.start(t); o1.stop(t+0.06);
   const o2=AC.createOscillator(),g2=AC.createGain(); o2.type="sine"; o2.frequency.setValueAtTime(1800,t+0.02); o2.frequency.exponentialRampToValueAtTime(520,t+0.18);
   g2.gain.setValueAtTime(0.0001,t+0.02); g2.gain.exponentialRampToValueAtTime(0.13,t+0.04); g2.gain.exponentialRampToValueAtTime(0.0001,t+0.2);
-  o2.connect(g2).connect(AC.destination); o2.start(t+0.02); o2.stop(t+0.22);
+  o2.connect(g2).connect(seDst()); o2.start(t+0.02); o2.stop(t+0.22);
   const n=AC.createBufferSource(),buf=AC.createBuffer(1,Math.floor(AC.sampleRate*0.12),AC.sampleRate),d=buf.getChannelData(0);
   for(let i=0;i<d.length;i++) d[i]=(Math.random()*2-1)*Math.pow(1-i/d.length,2); n.buffer=buf;
   const bp=AC.createBiquadFilter(); bp.type="bandpass"; bp.frequency.value=2600; bp.Q.value=0.8;
   const gn=AC.createGain(); gn.gain.setValueAtTime(0.09,t); gn.gain.exponentialRampToValueAtTime(0.0001,t+0.12);
-  n.connect(bp).connect(gn).connect(AC.destination); n.start(t); n.stop(t+0.12); }
-function lowBoom(){ if(!AC)return; const t=AC.currentTime,o=AC.createOscillator(),g2=AC.createGain(); o.type="sine"; o.frequency.setValueAtTime(140,t); o.frequency.exponentialRampToValueAtTime(40,t+0.5); g2.gain.setValueAtTime(0.3,t); g2.gain.exponentialRampToValueAtTime(0.0001,t+0.6); o.connect(g2).connect(AC.destination); o.start(t); o.stop(t+0.6); }
-function hitSE(){ if(!AC)return; const t=AC.currentTime,o=AC.createOscillator(),g2=AC.createGain(); o.type="square"; o.frequency.setValueAtTime(900,t); o.frequency.exponentialRampToValueAtTime(300,t+0.04); g2.gain.setValueAtTime(0.05,t); g2.gain.exponentialRampToValueAtTime(0.0001,t+0.06); o.connect(g2).connect(AC.destination); o.start(t); o.stop(t+0.07); }
+  n.connect(bp).connect(gn).connect(seDst()); n.start(t); n.stop(t+0.12); }
+function lowBoom(){ if(!AC)return; const t=AC.currentTime,o=AC.createOscillator(),g2=AC.createGain(); o.type="sine"; o.frequency.setValueAtTime(140,t); o.frequency.exponentialRampToValueAtTime(40,t+0.5); g2.gain.setValueAtTime(0.3,t); g2.gain.exponentialRampToValueAtTime(0.0001,t+0.6); o.connect(g2).connect(seDst()); o.start(t); o.stop(t+0.6); }
+function hitSE(){ if(!AC)return; const t=AC.currentTime,o=AC.createOscillator(),g2=AC.createGain(); o.type="square"; o.frequency.setValueAtTime(900,t); o.frequency.exponentialRampToValueAtTime(300,t+0.04); g2.gain.setValueAtTime(0.05,t); g2.gain.exponentialRampToValueAtTime(0.0001,t+0.06); o.connect(g2).connect(seDst()); o.start(t); o.stop(t+0.07); }
 function newPlayer(){ const d=DIFF[diffIdx]||DIFF[1]; return {x:W/2,y:H-90,lives:d.lives,bombs:d.bombs,power:1,bombFrag:0,lifeFrag:0,gauge:0,reso:0,inv:2.0,fireT:0,focus:false,_bh:false,face:1,tilt:0,idle:0,run:0,bombAnim:0}; }
 function newBoss(){ return {x:W/2,y:150,hp:0,maxHp:1,idx:-1,timer:0,run:null,sway:0,name:"",spell:false,flash:0,defeated:false,hitFlash:0,kx:0,ky:0,breath:0,castT:0}; }
+function optPositions(){ const n=Math.min(4,Math.floor(player.power)), arr=[], sp=player.focus?11:24, lift=player.focus?2:9;
+  for(let i=1;i<n;i++){ const side=(i%2===1)?-1:1, tier=Math.ceil(i/2); arr.push({x:player.x+side*sp*tier, y:player.y+lift}); } return arr; }
 
-function startGame(){ audioInit(); if(!CHAR) CHAR=CHARS[selIdx]; score=0; grazeCount=0; cleared=false; stageIdx=0; player=newPlayer();
-  freeze=0; shake=0; parts=[]; whiteFlash=0; hurtFlash=0; grazeMul=1; proLine=0; proChars=0; stopBGM(); state="prologue"; }
-function loadStage(i){ ST=STAGES[i]; bullets=[]; items=[]; boss=newBoss(); cutinT=0; introStep=0; introChars=0; introVoiceMark=0;
-  freeze=0; shake=0; parts=[]; whiteFlash=0; hurtFlash=0; grazeMul=1; grazeMulT=0; defeatT=0; bgmHot=false; bossShoutT=0; playBGM(ST.bgm); state="intro"; }
-function startPlay(){ state="play"; beatTime=0; beatCount=0; player.inv=Math.max(player.inv,1.2); bossNext(); }
+let MODE="story", endlessLoop=0, spdMul=1;
+function startGame(){ startRun(MODE); }   // リトライ＝同じモードで再挑戦
+function startRun(mode){ MODE=mode; audioInit(); if(!CHAR) CHAR=CHARS[selIdx]; score=0; grazeCount=0; cleared=false; stageIdx=0; endlessLoop=0; spdMul=1; player=newPlayer();
+  freeze=0; shake=0; parts=[]; whiteFlash=0; hurtFlash=0; grazeMul=1; proLine=0; proChars=0; stopBGM();
+  if(mode==="story"){ state="prologue"; } else { loadStage(0); } }   // 他モードは前置き無しで即開始
+function loadStage(i){ ST=(MODE==="ex")?EXSTAGE:STAGES[i]; bullets=[]; items=[]; enemies=[]; waveOn=false; boss=newBoss(); cutinT=0; introStep=0; introChars=0; introVoiceMark=0;
+  freeze=0; shake=0; parts=[]; whiteFlash=0; hurtFlash=0; grazeMul=1; grazeMulT=0; defeatT=0; bgmHot=false; bossShoutT=0; playBGM(ST.bgm);
+  if(MODE==="story"){ state="intro"; } else { startPlayNoWave(); } }   // ストーリーのみ会話、他は即戦闘
+function startPlay(){ state="play"; beatTime=0; beatCount=0; player.inv=Math.max(player.inv,1.2); runHitStage=false; runBombStage=false;
+  enemies=[]; waveOn=true; waveT=WAVE_TIME; waveSpawnT=0.4; waveIdx=0; }   // 道中スタート（ボスはウェーブ後）
+function startPlayNoWave(){ state="play"; beatTime=0; beatCount=0; player.inv=Math.max(player.inv,1.2); runHitStage=false; runBombStage=false; enemies=[]; waveOn=false; bossNext(); }   // 道中なし
+function commitScore(){ const key=MODE==="rush"?"bestRush":MODE==="endless"?"bestEndless":MODE==="ex"?"bestEx":"best"; if(score>(SAVE[key]||0)) SAVE[key]=score; saveSave(); }
 function bossNext(){ if(boss.run) boss.run=null; clearEnemy(); boss.idx++;
   if(boss.idx>=ST.phases.length){ boss.defeated=true; return; }
   const p=ST.phases[boss.idx]; const stageMul=5+stageIdx;   // 今のHPの5倍(1面)〜10倍(6面)
-  boss.maxHp=p.hp*HP_MUL*stageMul; boss.hp=boss.maxHp; boss.timer=p.time*3.5; boss.name=p.name; boss.spell=p.spell;
+  const endMul=(MODE==="endless")?(1+endlessLoop*0.45):(MODE==="ex"?1.4:1);
+  boss.maxHp=p.hp*HP_MUL*stageMul*endMul; boss.hp=boss.maxHp; boss.timer=p.time*3.5; boss.name=p.name; boss.spell=p.spell;
   boss.thr = p.spell ? [0.7,0.5,0.3] : [0.5];   // この値を下回るたびに形態移行＆挑発（半分0.5を必ず含む）
   boss.helpThr = [0.75,0.5,0.25];               // 25%削るごとにお助けアイテム
+  boss.spellOn=p.spell; boss.spellId=(MODE==="ex"?700:0)+stageIdx*10+boss.idx; boss.spellNoHit=true; boss.spellMax=boss.timer;   // スペルカード追跡
+  if(p.spell){ const e=SAVE.spells[boss.spellId]||(SAVE.spells[boss.spellId]={name:p.name,tries:0,caps:0,best:0}); e.tries++; e.name=p.name; saveSave(); }
   boss.run=makeRunner(p.g()); if(p.spell){ boss.flash=1.2; cutinT=1.6; boss.castT=1.0; lowBoom(); } }
-function nextStageOrClear(){ if(stageIdx<STAGES.length-1){ stageIdx++; loadStage(stageIdx); }
-  else { startEnding(); } }
-function startEnding(){ cleared=true; msg="ALL CLEAR"; state="ending"; edLine=0; edChars=0; bullets=[]; items=[];
+function nextStageOrClear(){ if(!runHitStage) ach("nomiss_stage"); if(!runBombStage) ach("nobomb_stage");   // 面クリア時の実績
+  let tot=0; for(const k in SAVE.spells) tot+=SAVE.spells[k].caps||0; if(tot>=10) ach("spell10");
+  if(MODE==="ex"){ cleared=true; msg="EX STAGE CLEAR"; state="result"; stopBGM(); ach("exclear"); commitScore(); return; }
+  if(MODE==="endless"){ stageIdx++; if(stageIdx>=STAGES.length){ stageIdx=0; endlessLoop++; spdMul=1+endlessLoop*0.12; } loadStage(stageIdx); return; }
+  if(stageIdx<STAGES.length-1){ stageIdx++; loadStage(stageIdx); }
+  else { if(MODE==="rush"){ cleared=true; msg="BOSS RUSH CLEAR"; state="result"; stopBGM(); ach("rushclear"); commitScore(); } else { startEnding(); } } }
+function startEnding(){ cleared=true; msg="ALL CLEAR"; state="ending"; edLine=0; edChars=0; bullets=[]; items=[]; ach("allclear"); commitScore();
   stopBGM(); if(CHAR&&CHAR.edBgm) playBGM(CHAR.edBgm,false); }
 function edAdvance(){ const lines=(CHAR&&CHAR.ed)||[]; const cur=lines[edLine]||"";
   if(edChars<cur.length){ edChars=cur.length; return; }
   edLine++; edChars=0; if(edLine>=lines.length){ creditY=H; state="credits"; } }
-function doBomb(){ player.bombs--; player.inv=2.6; bombSound(); lowBoom(); bombFlash=1.0; bombWave=1.0; player.bombAnim=0.78;
+function doBomb(){ player.bombs--; player.inv=2.6; runBombStage=true; bombSound(); lowBoom(); bombFlash=1.0; bombWave=1.0; player.bombAnim=0.78;
   bombName=(CHAR&&BOMBS[CHAR.key])?BOMBS[CHAR.key].name:"鎮音";
   if(CHAR&&BOMBS[CHAR.key]) BOMBS[CHAR.key].fn(player);   // キャラ専用スペル弾
   freeze=Math.max(freeze,0.07); shake=Math.min(1.2,shake+0.8);
   addBurst(player.x,player.y,(CHAR?CHAR.col:"#fff"),32,260); addBurst(player.x,player.y,"#ffffff",18,180);
-  clearToStars(); if(!boss.defeated) boss.hp-=Math.max(180, boss.maxHp*0.14); }   // 全消し＋大ダメージ（即死はしない）
+  clearToStars(); for(const e of enemies) e.hp-=240; if(!boss.defeated&&!waveOn) boss.hp-=Math.max(180, boss.maxHp*0.14); }   // 全消し＋大ダメージ（即死はしない）
 function playerHit(){ if(player.bombs>0&&(keys["x"]||bombBtn||bombTap)){ doBomb(); bombTap=false; return; }   // 喰らいボム
+  if(boss&&boss.spellOn) boss.spellNoHit=false; runHitStage=true;   // スペル取得失敗／被弾0面の判定用
   // 被弾＝霊力が光になって弾ける（ピチューン）：軽く・短く・青白く（罰ではなくリセットの爽快感）
   freeze=Math.max(freeze,0.20); shake=Math.min(Math.max(shake,0.4),0.5); whiteFlash=Math.max(whiteFlash,0.20); hurtFlash=Math.max(hurtFlash,0.30); grazeMul=1; grazeMulT=0;
   pichunX=player.x; pichunY=player.y; pichunT=0.6; addPichun(player.x,player.y); pichun();   // 被弾の瞬間にヒットストップ＝「効いた」を伝える
   // 周囲の弾をふわっと消して星屑を少し散らす（画面が少し空く）
   let n=0; for(const b of bullets){ if(b.enemy&&!b.dead){ b.dead=true; if(n<22){ spawnItem(b.x,b.y,"star"); n++; } } }
   player.lives--; player.inv=2.5; player.power=1; player.x=W/2; player.y=H-90; player.gauge=Math.max(0,player.gauge-40);   // 死亡で弾レベルは1に戻る
-  if(player.lives<=0){ state="result"; cleared=false; msg="GAME OVER"; stopBGM(); } }
+  if(player.lives<=0){ state="result"; cleared=false; msg="GAME OVER"; stopBGM(); commitScore(); } }
 
 // ---------- update ----------
 function update(dt){
+  if(state==="pause"||state==="settings") return;   // 一時停止中は時間を止める
   if(cutinT>0) cutinT-=dt;
   if(bombFlash>0) bombFlash-=dt; if(bombWave>0) bombWave-=dt*1.7; if(bossShoutT>0) bossShoutT-=dt;
-  if(hurtFlash>0) hurtFlash-=dt; if(whiteFlash>0) whiteFlash-=dt; if(pichunT>0) pichunT-=dt;
+  if(hurtFlash>0) hurtFlash-=dt; if(whiteFlash>0) whiteFlash-=dt; if(pichunT>0) pichunT-=dt; if(spellResultT>0) spellResultT-=dt;
+  if(comboT>0){ comboT-=dt; if(comboT<=0) comboCount=0; }
   if(shake>0) shake=Math.max(0,shake-dt*11); if(microStopCD>0) microStopCD-=dt;
   if(boss&&boss.hitFlash>0) boss.hitFlash-=dt;
   updateParts(dt);
@@ -569,7 +654,7 @@ function update(dt){
   if(state==="ending") edChars+=dt*28;
   if(state==="credits"){ creditY-=dt*42; if(creditY < -(CREDITS.length*24+300)) state="result"; }
   if(state!=="play"){ updateBullets(dt*0.6); return; }
-  if(defeatT>0){ defeatT-=dt; if(defeatT<=0){ state="after"; afterStep=0; afterChars=0; } return; }   // 撃破カットイン→後日談
+  if(defeatT>0){ defeatT-=dt; if(defeatT<=0){ if(MODE==="story"){ state="after"; afterStep=0; afterChars=0; } else { nextStageOrClear(); } } return; }   // 撃破カットイン→（ストーリーは後日談、他は次へ）
   if(freeze>0){ freeze-=dt; return; }   // ヒットストップ＝世界を止めて「効いた」を伝える
   if(grazeMulT>0) grazeMulT-=dt; else if(grazeMul>1) grazeMul=Math.max(1,grazeMul-dt*0.7);
   // beat
@@ -580,7 +665,7 @@ function update(dt){
   if(keys["arrowleft"]||keys["a"])mx-=1; if(keys["arrowright"]||keys["d"])mx+=1;
   if(keys["arrowup"]||keys["w"])my-=1; if(keys["arrowdown"]||keys["s"])my+=1;
   let appliedX=0, movingNow=false;
-  if(moveTouch){ const dx=moveTouch.dx*1.15, dy=moveTouch.dy*1.15; player.x+=dx; player.y+=dy; appliedX=dx; movingNow=(Math.abs(dx)+Math.abs(dy)>0.3); moveTouch.dx=0; moveTouch.dy=0; }
+  if(moveTouch){ const sn=CFG().sens, dx=moveTouch.dx*sn, dy=moveTouch.dy*sn; player.x+=dx; player.y+=dy; appliedX=dx; movingNow=(Math.abs(dx)+Math.abs(dy)>0.3); moveTouch.dx=0; moveTouch.dy=0; }
   else if(pointer.active){ const dx=pointer.x-player.x,dy=pointer.y-player.y,d=Math.hypot(dx,dy);
     if(d>1){ const mv=Math.min(d,(player.focus?105:252)*dt); player.x+=dx/d*mv; player.y+=dy/d*mv; } appliedX=dx; movingNow=d>2; }
   else { const m=Math.hypot(mx,my)||1,spd=(player.focus?105:252)*dt; player.x+=mx/m*spd; player.y+=my/m*spd; appliedX=mx; movingNow=(!!mx||!!my); }
@@ -594,31 +679,37 @@ function update(dt){
   if(player.bombAnim>0) player.bombAnim-=dt;
   // shot
   player.fireT-=dt; if(player.fireT<=0){ player.fireT=0.06; (CHAR||CHARS[0]).fire(player, Math.floor(player.power)); }   // 常時ショット
+  player.optT=(player.optT||0)-dt; if(player.optT<=0&&Math.floor(player.power)>1){ player.optT=0.1; for(const o of optPositions()) fireP(o.x,o.y,900,270,4,0.5,{home:CHAR&&CHAR.key==="kotone"}); }   // オプションのサブショット
   // bomb / resonance
   const wantBomb=keys["x"]||bombBtn;
   if(((wantBomb&&!player._bh)||bombTap)&&player.inv<=0&&player.bombs>0) doBomb();
   player._bh=wantBomb; bombTap=false;
-  if(keys["c"]&&player.gauge>=100&&player.reso<=0){ player.reso=3; player.gauge=0; }
+  if(keys["c"]&&player.gauge>=100&&player.reso<=0){ player.reso=3; player.gauge=0; ach("reso"); }
   if(player.reso>0) player.reso-=dt; if(player.inv>0) player.inv-=dt;
+  if(waveOn) waveUpdate(dt);   // 道中（雑魚ウェーブ）→終わるとボス出現
   // boss
   boss.sway+=dt; boss.x=W/2+Math.sin(boss.sway*0.6)*110; boss.y=150+Math.sin(boss.sway*1.1)*14; if(boss.flash>0) boss.flash-=dt;
   boss.breath+=dt*2.2; if(boss.castT>0) boss.castT-=dt*0.85;   // 生きてる感＋大技モーション
   const kdec=Math.max(0,1-dt*12); boss.kx*=kdec; boss.ky*=kdec;
   boss.kx=Math.max(-16,Math.min(16,boss.kx)); boss.ky=Math.max(-16,Math.min(16,boss.ky));
-  if(!boss.defeated){ if(boss.run) boss.run.step(dt); boss.timer-=dt;
+  if(!waveOn && !boss.defeated){ if(boss.run) boss.run.step(dt); boss.timer-=dt;
     // HPしきい値で形態移行＆挑発セリフ
     while(boss.thr&&boss.thr.length&&(boss.hp/boss.maxHp)<=boss.thr[0]){ const thrV=boss.thr.shift();
-      if(thrV===0.5){ const ha=BOSSHALF[stageIdx]||["……"]; bossShout=ha[(boss.halfN=(boss.halfN||0)+1)%ha.length]; bossShoutT=3.4; }
-      else { const arr=BOSSSHOUT[stageIdx]||["……"]; bossShout=arr[(boss.shoutN||0)%arr.length]; boss.shoutN=(boss.shoutN||0)+1; bossShoutT=3.0; }
+      if(thrV===0.5){ const ha=(MODE==="ex"?EXHALF:(BOSSHALF[stageIdx]||["……"])); bossShout=ha[(boss.halfN=(boss.halfN||0)+1)%ha.length]; bossShoutT=3.4; }
+      else { const arr=(MODE==="ex"?EXSHOUT:(BOSSSHOUT[stageIdx]||["……"])); bossShout=arr[(boss.shoutN||0)%arr.length]; boss.shoutN=(boss.shoutN||0)+1; bossShoutT=3.0; }
       boss.flash=Math.max(boss.flash,0.9); boss.castT=Math.max(boss.castT,0.7); whiteFlash=Math.max(whiteFlash,0.14); voiceBlip({who:"boss"}); }
     // 最終フェーズでHP半分 → さらにかっこいいBGMへ＋宣言セリフ
     if(!bgmHot&&boss.idx===ST.phases.length-1&&(boss.hp/boss.maxHp)<=0.5){ bgmHot=true; playBGM(ST.bgm+"b",true);
-      const ha=BOSSHALF[stageIdx]||["……"]; bossShout=ha[(boss.halfN=(boss.halfN||0)+1)%ha.length]; bossShoutT=3.6; boss.flash=Math.max(boss.flash,1.1); boss.castT=Math.max(boss.castT,0.85); whiteFlash=Math.max(whiteFlash,0.22); voiceBlip({who:"boss"}); }
+      const ha=(MODE==="ex"?EXHALF:(BOSSHALF[stageIdx]||["……"])); bossShout=ha[(boss.halfN=(boss.halfN||0)+1)%ha.length]; bossShoutT=3.6; boss.flash=Math.max(boss.flash,1.1); boss.castT=Math.max(boss.castT,0.85); whiteFlash=Math.max(whiteFlash,0.22); voiceBlip({who:"boss"}); }
     // 25%削るごとにお助けアイテム
     while(boss.helpThr&&boss.helpThr.length&&(boss.hp/boss.maxHp)<=boss.helpThr[0]){ boss.helpThr.shift();
       const hk=(boss.helpN=(boss.helpN||0)+1); spawnItem(boss.x-16,boss.y+18,"P"); spawnItem(boss.x+16,boss.y+18,(hk%2)?"bomb":"point"); addBurst(boss.x,boss.y,"#9fff9f",10,150); }
     if(boss.hp<=0||boss.timer<=0){ const cap=boss.hp<=0;
-      if(ST.phases[boss.idx].spell) score+=(cap?1000000:200000);
+      if(ST.phases[boss.idx].spell){ const captured=cap&&boss.spellNoHit, timeLeft=Math.max(0,boss.timer);
+        const bonus=Math.round(100000 + (cap?timeLeft*6000:0) + (captured?700000:0)); score+=bonus;
+        spellResultBonus=bonus; spellResultText=captured?"スペルカード GET ！":(cap?"撃 破":"時間切れ…"); spellResultT=2.4;
+        const e=SAVE.spells[boss.spellId]; if(e){ if(captured){ e.caps++; if(timeLeft>e.best)e.best=Math.round(timeLeft); } saveSave(); }
+        boss.spellOn=false; }
       if(cap){ dropCluster(false); clearToStars();   // 取得＝決まった感
         freeze=Math.max(freeze,0.12); shake=Math.min(1.0,shake+0.6); whiteFlash=Math.max(whiteFlash,0.16);
         addBurst(boss.x,boss.y,"#ffe96a",22,220); hitSE(); }
@@ -642,25 +733,29 @@ function collide(){ const px=player.x,py=player.y;
         player.gauge=Math.min(100,player.gauge+(player.reso>0?2:1));
         score+=Math.round((40+close*130)*grazeMul*(player.reso>0?2:1));
         addSpark(b.x,b.y, close>0.6?"#ffffff":"#7fe9e0"); } } }
-    else if(!boss.defeated){ const dx=b.x-boss.x,dy=b.y-boss.y,r=24+b.r; if(dx*dx+dy*dy<=r*r){ const dmg=(b.dmg||1.2)*DMG_MUL; boss.hp-=dmg; score+=120; b.dead=true;
-      boss.hitFlash=0.06;   // 画面は揺らさず、ボス自身をノックバックさせて「当たった感」
-      const a2=Math.atan2(dy,dx); boss.kx+=Math.cos(a2)*dmg*0.9; boss.ky+=Math.sin(a2)*dmg*0.9;
-      if(dmg>=2 && microStopCD<=0){ freeze=Math.max(freeze,0.03); microStopCD=0.14; hitSE(); } } } } }
+    else { // 自機弾：まず雑魚、いなければボス
+      let hitE=false;
+      for(const e of enemies){ if(e.dead)continue; const ex=b.x-e.x,ey=b.y-e.y; if(ex*ex+ey*ey<=(12+b.r)*(12+b.r)){ e.hp-=(b.dmg||1.2)*DMG_MUL; b.dead=true; hitE=true; addSpark(b.x,b.y,"#fff"); if(e.hp<=0){ e.dead=true; killEnemy(e); } break; } }
+      if(!hitE && !waveOn && !boss.defeated){ const dx=b.x-boss.x,dy=b.y-boss.y,r=24+b.r; if(dx*dx+dy*dy<=r*r){ const dmg=(b.dmg||1.2)*DMG_MUL; boss.hp-=dmg; score+=120; b.dead=true;
+        boss.hitFlash=0.06;   // 画面は揺らさず、ボス自身をノックバックさせて「当たった感」
+        const a2=Math.atan2(dy,dx); boss.kx+=Math.cos(a2)*dmg*0.9; boss.ky+=Math.sin(a2)*dmg*0.9;
+        if(dmg>=2 && microStopCD<=0){ freeze=Math.max(freeze,0.03); microStopCD=0.14; hitSE(); } } } } } }
 
 // ---------- render ----------
 function draw(){
   g.clearRect(0,0,W,H);
   // 撃破カットイン中だけ強め、通常プレイ中の画面揺れは控えめ（操作性優先）
   const shScale=(defeatT>0)?2.4:1.2;
-  const sh=(state==="play"&&shake>0)?Math.min(shake,1.6):0, sx=(Math.random()*2-1)*sh*shScale, sy=(Math.random()*2-1)*sh*shScale;
+  const sh=(state==="play"&&shake>0)?Math.min(shake,1.6)*CFG().shake:0, sx=(Math.random()*2-1)*sh*shScale, sy=(Math.random()*2-1)*sh*shScale;
   if(sh) g.translate(sx,sy);
   const bg = ST?IMG[ST.bg]:null;
   if(ready(bg)){ drawCover(bg); g.fillStyle="rgba(7,11,22,0.5)"; g.fillRect(0,0,W,H); }
   else { g.fillStyle="#070b16"; g.fillRect(0,0,W,H); }
 
   if(state==="play"||state==="result"){
+    if(state==="play"&&player.focus){ g.fillStyle="rgba(4,6,14,0.32)"; g.fillRect(0,0,W,H); }   // 集中で背景減光＝弾が見やすい
     // boss bust
-    if(ST&&!boss.defeated){ const bi=IMG[ST.boss], bX=boss.x+boss.kx, bY=boss.y+boss.ky;
+    if(ST&&!boss.defeated&&!waveOn){ const bi=IMG[ST.boss], bX=boss.x+boss.kx, bY=boss.y+boss.ky;
       const cp=boss.castT>0?Math.sin((1-boss.castT)*Math.PI):0;   // 大技モーション 0→1→0
       const lift=-cp*22, bb=Math.sin(boss.breath);
       const bscy=1+bb*0.03+cp*0.10, bscx=1-bb*0.02-cp*0.04;       // 呼吸＋大技で迫り上がる
@@ -674,9 +769,15 @@ function draw(){
         g.globalAlpha=1; g.restore(); }
       g.globalCompositeOperation="lighter"; g.beginPath(); g.fillStyle="rgba(160,220,230,0.14)"; g.arc(bX,bY+lift,38,0,7); g.fill(); g.globalCompositeOperation="source-over";
     }
+    // 雑魚（道中）
+    for(const e of enemies){ if(e.dead)continue;
+      g.globalCompositeOperation="lighter"; g.globalAlpha=0.9; g.fillStyle=e.col; g.beginPath(); g.arc(e.x,e.y,10,0,7); g.fill();
+      g.globalCompositeOperation="source-over"; g.globalAlpha=1; g.fillStyle="#0a1420"; g.beginPath(); g.arc(e.x,e.y,5,0,7); g.fill();
+      g.fillStyle="#fff"; g.beginPath(); g.arc(e.x-1.5,e.y-1.5,1.8,0,7); g.fill(); }
     // bullets
     g.globalCompositeOperation="lighter";
     for(const b of bullets){ if(b.dead)continue; g.beginPath(); g.fillStyle=b.col; g.globalAlpha=b.enemy?0.95:0.9; g.arc(b.x,b.y,b.r+(b.enemy?1.5:0),0,7); g.fill();
+      if(CFG().contrast&&b.enemy){ g.globalAlpha=0.95; g.fillStyle="#ffffff"; g.beginPath(); g.arc(b.x,b.y,Math.max(1,b.r*0.55),0,7); g.fill(); }   // 高コントラスト＝白い芯
       if(player.focus && b.enemy){ const dx=b.x-player.x,dy=b.y-player.y; if(dx*dx+dy*dy<42*42){ g.globalAlpha=0.55; g.strokeStyle="#ffbcc4"; g.lineWidth=1; g.beginPath(); g.arc(b.x,b.y,b.r+3,0,7); g.stroke(); } } }
     g.globalAlpha=1; g.globalCompositeOperation="source-over";
     // 上部回収ライン
@@ -693,6 +794,9 @@ function draw(){
       else { g.beginPath(); g.moveTo(it.x,it.y-6); g.lineTo(it.x+6,it.y); g.lineTo(it.x,it.y+6); g.lineTo(it.x-6,it.y); g.closePath(); g.fill(); } }
     // player
     const a=player.inv>0?(0.4+0.3*Math.sin(performance.now()/16)):1;
+    // オプション（サブショット）＝パワー連動。集中で内側に寄る
+    { const ops=optPositions(), oc=(CHAR?CHAR.col:"#7fe9e0"), opul=0.7+0.3*Math.sin(performance.now()/110);
+      g.globalCompositeOperation="lighter"; for(const o of ops){ g.globalAlpha=0.85*opul; g.fillStyle=oc; g.beginPath(); g.arc(o.x,o.y,4.2,0,7); g.fill(); g.globalAlpha=0.95; g.fillStyle="#fff"; g.beginPath(); g.arc(o.x,o.y,1.8,0,7); g.fill(); } g.globalAlpha=1; g.globalCompositeOperation="source-over"; }
     const psr = (CHAR&&IMG[CHAR.sprite]&&ready(IMG[CHAR.sprite]))?IMG[CHAR.sprite]:IMG.kotone;
     if(ready(psr)){ const ph=46,pw=ph*psr.naturalWidth/psr.naturalHeight;
       const br=Math.sin(player.idle*1.15);                                  // 呼吸・躍動
@@ -705,7 +809,7 @@ function draw(){
     else { g.globalAlpha=a; g.beginPath(); g.fillStyle="#d8f7ff"; g.arc(player.x,player.y,7,0,7); g.fill(); g.globalAlpha=1; }
     // 当たり判定の可視化（常時うっすら、集中で強調）
     const pulse=0.6+0.4*Math.sin(performance.now()/90);
-    if(player.focus){
+    if(player.focus||CFG().hitbox){
       g.strokeStyle="rgba(127,233,224,0.5)"; g.lineWidth=1; g.beginPath(); g.arc(player.x,player.y,GRAZER,0,7); g.stroke();   // グレイズ範囲
       g.strokeStyle="rgba(255,255,255,0.5)"; for(let k=0;k<4;k++){ const ang=k*Math.PI/2; g.beginPath(); g.moveTo(player.x+Math.cos(ang)*6,player.y+Math.sin(ang)*6); g.lineTo(player.x+Math.cos(ang)*11,player.y+Math.sin(ang)*11); g.stroke(); }  // 十字
     }
@@ -762,19 +866,31 @@ function draw(){
       g.strokeStyle=(CHAR?CHAR.col:"#ffd24a"); g.lineWidth=2; g.stroke();
       g.fillStyle="#fff"; g.textAlign="center"; g.font="bold 13px sans-serif"; g.fillText("BOMB",cbx,cby-1); g.font="11px sans-serif"; g.fillText("×"+player.bombs,cbx,cby+13); g.globalAlpha=1; g.textAlign="left";
     }
+    // ポーズボタン（右上）
+    g.fillStyle="rgba(20,24,40,0.55)"; g.beginPath(); g.arc(W-22,22,16,0,7); g.fill();
+    g.fillStyle="#cfe"; g.fillRect(W-27,15,4,14); g.fillRect(W-20,15,4,14);
     // HUD
     g.textAlign="left"; g.fillStyle="#fff"; g.font="bold 16px sans-serif"; g.fillText("SCORE "+score.toLocaleString(),10,22);
     g.font="12px sans-serif"; g.fillText("自機 "+Math.max(0,player.lives)+"  ボム "+player.bombs+"  Power "+Math.floor(player.power)+"/4  欠片 残"+player.lifeFrag+"/5 ボム"+player.bombFrag+"/5",10,42);
     g.fillStyle="rgba(0,0,0,.5)"; g.fillRect(10,50,150,10); g.fillStyle="#33cce6"; g.fillRect(10,50,150*(player.gauge/100),10);
     if(player.reso>0){ g.fillStyle="#7fe9e0"; g.font="12px sans-serif"; g.fillText("共鳴解放中！",170,60); }
     else if(player.gauge>=100){ g.fillStyle="#7fe9e0"; g.font="12px sans-serif"; g.fillText("共鳴READY [C]",170,60); }
-    if(ST){ g.fillStyle="#ffd97f"; g.font="12px sans-serif"; g.fillText("STAGE "+(stageIdx+1)+"/6  "+ST.name+"  ["+(CHAR?CHAR.name:"")+" / "+DIFF[diffIdx].name+"]",10,76); }
+    if(ST){ const sl=MODE==="ex"?"EX":(MODE==="endless"?((stageIdx+1)+"/∞("+(endlessLoop+1)+"周)"):((stageIdx+1)+"/6"));
+      g.fillStyle="#ffd97f"; g.font="12px sans-serif"; g.fillText("STAGE "+sl+"  "+ST.name+"  ["+(CHAR?CHAR.name:"")+" / "+DIFF[diffIdx].name+"]",10,76); }
+    if(waveOn){ g.textAlign="center"; g.fillStyle="#7fe9e0"; g.font="bold 14px sans-serif"; g.fillText("- 道中 -  まもなくボス",W/2,96); g.textAlign="left"; }
     if(!boss.defeated&&boss.idx>=0){ const n=boss.hp/boss.maxHp;
       g.fillStyle="rgba(0,0,0,.5)"; g.fillRect(40,86,W-80,8); g.fillStyle="#e6667f"; g.fillRect(40,86,(W-80)*Math.max(0,n),8);
       g.textAlign="center"; g.fillStyle=boss.spell?"#ffd97f":"#fff"; g.font="bold 15px sans-serif"; g.fillText(boss.name,W/2,110);
-      if(boss.flash>0){ g.fillStyle="#ffe96a"; g.font="bold 13px sans-serif"; g.fillText("SPELL!",W/2,128); } }
+      if(boss.spellOn&&boss.spellMax>0){ const tf=Math.max(0,Math.min(1,boss.timer/boss.spellMax));   // スペル残り時間バー
+        g.fillStyle="rgba(0,0,0,.5)"; g.fillRect(110,118,W-220,5); g.fillStyle=tf<0.25?"#ff6b6b":"#ffd97f"; g.fillRect(110,118,(W-220)*tf,5);
+        g.textAlign="right"; g.fillStyle="#ffd97f"; g.font="bold 11px sans-serif"; g.fillText("TIME "+Math.ceil(boss.timer),W-42,116);
+        g.textAlign="left"; g.fillStyle=boss.spellNoHit?"#7fe9e0":"#ff9a9a"; g.font="bold 11px sans-serif"; g.fillText(boss.spellNoHit?"NO HIT":"被弾",42,116); }
+      if(boss.flash>0){ g.textAlign="center"; g.fillStyle="#ffe96a"; g.font="bold 13px sans-serif"; g.fillText("SPELL CARD",W/2,132); } }
     if(grazeMul>1.05){ g.textAlign="left"; g.fillStyle=grazeMul>2?"#ffd24a":"#7fe9e0"; g.font="bold 13px sans-serif"; g.fillText("GRAZE ×"+grazeMul.toFixed(2),300,60); }
-    if(touchMode){ g.textAlign="center"; g.fillStyle="rgba(255,120,120,.35)"; g.beginPath(); g.arc(W-38,H-38,30,0,7); g.fill(); g.fillStyle="#fff"; g.font="bold 13px sans-serif"; g.fillText("BOMB",W-38,H-34); }
+    if(comboCount>1){ g.textAlign="center"; g.fillStyle=comboCount>=10?"#ffd24a":"#9fff9f"; g.font="bold 16px sans-serif"; g.fillText("CHAIN ×"+comboCount,W/2,150); g.textAlign="left"; }
+    if(spellResultT>0){ const a2=Math.min(1,spellResultT*1.7), got=spellResultText.indexOf("GET")>=0; g.textAlign="center"; g.globalAlpha=a2;
+      g.fillStyle=got?"#ffe96a":"#dfe9ff"; g.font="bold 26px sans-serif"; g.fillText(spellResultText,W/2,H*0.40);
+      g.fillStyle="#fff"; g.font="bold 15px sans-serif"; g.fillText("+"+spellResultBonus.toLocaleString(),W/2,H*0.40+26); g.globalAlpha=1; g.textAlign="left"; }
     // フラッシュ（決まった/やられた）
     if(whiteFlash>0){ g.globalAlpha=Math.min(0.8,whiteFlash*2.4); g.fillStyle="#ffffff"; g.fillRect(-8,-8,W+16,H+16); g.globalAlpha=1; }
     if(hurtFlash>0){ g.globalCompositeOperation="lighter"; g.globalAlpha=Math.min(0.4,hurtFlash*1.0); g.fillStyle="#bfe8ff"; g.fillRect(-8,-8,W+16,H+16); g.globalAlpha=1; g.globalCompositeOperation="source-over"; }
@@ -813,9 +929,37 @@ function draw(){
     if(ready(IMG.logo)){ const lw=Math.min(380,W-40),lh=lw*IMG.logo.naturalHeight/IMG.logo.naturalWidth; g.drawImage(IMG.logo,W/2-lw/2,H*0.14,lw,lh); }
     else { g.fillStyle="#7fe9e0"; g.font="bold 40px sans-serif"; g.fillText("燐音郷",W/2,H*0.34); }
     g.fillStyle="#cfe"; g.font="14px sans-serif"; g.fillText("～ Phosphorescent Sonata",W/2,H*0.42);
-    g.fillStyle="#fff"; g.font="18px sans-serif"; g.fillText("Z / 画面タップで開始",W/2,H*0.56);
-    g.fillStyle="#9cc"; g.font="12px sans-serif"; g.fillText("全6面・実BGM・各ボスの弾幕＆立ち絵",W/2,H*0.63);
-    g.fillText("弾に近づくとグレイズ→満タンでC＝共鳴解放(弾スロー)",W/2,H*0.67);
+    const tm=titleMenu(), baseY=H*0.46, step=H*0.062;
+    g.font="bold 18px sans-serif";
+    for(let i=0;i<tm.length;i++){ const on=(titleSel%tm.length)===i; g.fillStyle=on?"#ffe96a":"#8aa"; g.fillText((on?"▶ ":"")+tm[i][1], W/2, baseY+i*step); }
+    g.fillStyle="#9cc"; g.font="11px sans-serif"; g.fillText("↑↓で選択・Z / タップで決定", W/2, baseY+tm.length*step+6);
+    if(!SAVE.ach.allclear){ g.fillStyle="#677"; g.font="10px sans-serif"; g.fillText("※ EXステージは ALL CLEAR で解放", W/2, baseY+tm.length*step+22); }
+    if(SAVE.best>0){ g.fillStyle="#cfe"; g.font="11px sans-serif"; g.fillText("STORY BEST  "+SAVE.best.toLocaleString(), W/2, H*0.92); }
+  }
+  if(state==="records"){
+    g.fillStyle="rgba(5,8,15,.86)"; g.fillRect(0,0,W,H);
+    g.textAlign="left";
+    g.fillStyle="#7fe9e0"; g.font="bold 22px sans-serif"; g.fillText("きろく",20,40);
+    g.fillStyle="#9cc"; g.font="12px sans-serif"; g.textAlign="right"; g.fillText("上部タップ / X で戻る",W-16,40); g.textAlign="left";
+    g.fillStyle="#fff"; g.font="bold 15px sans-serif"; g.fillText("STORY "+(SAVE.best||0).toLocaleString()+"   RUSH "+((SAVE.bestRush||0).toLocaleString()),20,68);
+    g.font="bold 15px sans-serif"; g.fillText("ENDLESS "+((SAVE.bestEndless||0).toLocaleString())+"   EX "+((SAVE.bestEx||0).toLocaleString()),20,86);
+    // 実績
+    g.fillStyle="#ffd97f"; g.font="bold 14px sans-serif"; g.fillText("実績",20,100);
+    g.font="12px sans-serif"; for(let i=0;i<ACHLIST.length;i++){ const got=!!SAVE.ach[ACHLIST[i][0]];
+      g.fillStyle=got?"#9fff9f":"#566"; g.fillText((got?"★ ":"☆ ")+ACHLIST[i][1],26,120+i*17); }
+    // スペル図鑑
+    g.fillStyle="#ffd97f"; g.font="bold 14px sans-serif"; let yy=120+ACHLIST.length*17+16; g.fillText("スペルカード図鑑",20,yy); yy+=18;
+    g.font="11px sans-serif"; let cnt=0;
+    for(const k in SAVE.spells){ const e=SAVE.spells[k]; if(!e||!e.name) continue;
+      g.fillStyle=e.caps>0?"#cfe":"#788"; g.fillText((e.caps>0?"◆ ":"◇ ")+e.name+"  取得"+(e.caps||0)+"/"+(e.tries||0),26,yy); yy+=15; cnt++; if(yy>H-150) break; }
+    if(cnt===0){ g.fillStyle="#566"; g.fillText("（まだスペルに挑んでいません）",26,yy); }
+    // ミュージックルーム
+    const my=H-118; g.fillStyle="#ffd97f"; g.font="bold 14px sans-serif"; g.fillText("ミュージックルーム",20,my);
+    g.fillStyle="rgba(127,233,224,0.12)"; rrect(20,my+10,W-40,54,10); g.fill();
+    g.fillStyle="#fff"; g.font="bold 15px sans-serif"; g.textAlign="center"; g.fillText(MUSIC[musicSel].name,W/2,my+34);
+    g.fillStyle="#7fe9e0"; g.font="bold 18px sans-serif"; g.fillText("◀",44,my+38); g.fillText("▶",W-44,my+38);
+    g.fillStyle="#9cc"; g.font="11px sans-serif"; g.fillText("◀▶で選択・Z/中央タップで再生",W/2,my+56);
+    g.textAlign="left";
   }
   if(state==="select"){
     g.fillStyle="rgba(5,8,15,.62)"; g.fillRect(0,0,W,H);
@@ -886,12 +1030,31 @@ function draw(){
     g.fillStyle="#9fe9ff"; g.font="bold 15px sans-serif"; g.fillText("CLEAR — "+(CHAR?CHAR.name:""),W/2,y+12);
     g.fillStyle="rgba(255,255,255,.6)"; g.font="12px sans-serif"; g.fillText("Z / タップでスキップ",W/2,H-18);
   }
+  if(state==="pause"){ g.fillStyle="rgba(5,8,15,.72)"; g.fillRect(0,0,W,H);
+    g.textAlign="center"; g.fillStyle="#7fe9e0"; g.font="bold 26px sans-serif"; g.fillText("PAUSE",W/2,H*0.32);
+    g.font="bold 19px sans-serif";
+    for(let i=0;i<PAUSEITEMS.length;i++){ const on=(pauseSel%PAUSEITEMS.length)===i; g.fillStyle=on?"#ffe96a":"#9aa"; g.fillText((on?"▶ ":"")+PAUSEITEMS[i][1], W/2, H*0.44+i*36); }
+    g.fillStyle="#9cc"; g.font="11px sans-serif"; g.fillText("↑↓選択・Z決定・Esc/Pで再開", W/2, H*0.44+PAUSEITEMS.length*36+10); g.textAlign="left"; }
+  if(state==="settings"){ g.fillStyle="rgba(5,8,15,.92)"; g.fillRect(0,0,W,H);
+    g.textAlign="center"; g.fillStyle="#7fe9e0"; g.font="bold 24px sans-serif"; g.fillText("設定",W/2,H*0.13);
+    for(let i=0;i<CFGROWS.length;i++){ const r=CFGROWS[i], on=(cfgRow===i), v=CFG()[r[0]], y=H*0.24+i*46;
+      g.textAlign="left"; g.fillStyle=on?"#ffe96a":"#cde"; g.font="bold 15px sans-serif"; g.fillText((on?"▶ ":"  ")+r[1], 36, y);
+      const bx=W-176, bw=140;
+      if(r[4]===1){ g.textAlign="right"; g.fillStyle=v>0?"#7fe9e0":"#566"; g.font="bold 14px sans-serif"; g.fillText(v>0?"ON":"OFF", W-40, y); }
+      else { const f=(v-r[2])/(r[3]-r[2]); g.fillStyle="rgba(255,255,255,.16)"; g.fillRect(bx,y-10,bw,8); g.fillStyle=on?"#ffe96a":"#7fe9e0"; g.fillRect(bx,y-10,bw*Math.max(0,Math.min(1,f)),8);
+        g.textAlign="right"; g.fillStyle="#cde"; g.font="11px sans-serif"; g.fillText((Math.round(v*100)/100)+"", W-40, y-13); }
+      if(on){ g.textAlign="center"; g.fillStyle="#9cc"; g.font="bold 14px sans-serif"; g.fillText("◀",bx-16,y-2); g.fillText("▶",W-24,y-2); } }
+    g.textAlign="center"; g.fillStyle="#9cc"; g.font="11px sans-serif"; g.fillText("↑↓選択 ◀▶調整 Z/Xで戻る（タップ：項目で切替/左右半分で増減）", W/2, H*0.9); g.textAlign="left"; }
   if(state==="result"){
     g.fillStyle="rgba(5,8,15,.62)"; g.fillRect(0,0,W,H);
-    g.fillStyle=cleared?"#ffd97f":"#ff8a99"; g.font="bold 34px sans-serif"; g.fillText(msg,W/2,H*0.4);
-    g.fillStyle="#fff"; g.font="18px sans-serif"; g.fillText("SCORE "+score.toLocaleString(),W/2,H*0.4+40);
-    g.fillStyle="#7fe9e0"; g.font="13px sans-serif"; g.fillText(cleared?"燐の音は、巡る。 #燐音郷":"#燐音郷",W/2,H*0.4+66);
-    g.fillStyle="#fff"; g.font="16px sans-serif"; g.fillText("R / タップでもう一度",W/2,H*0.4+96);
+    const mlabel={story:"STORY",rush:"BOSS RUSH",endless:"ENDLESS",ex:"EX STAGE"}[MODE]||"";
+    g.fillStyle="#9cc"; g.font="13px sans-serif"; g.fillText(mlabel,W/2,H*0.4-34);
+    g.fillStyle=cleared?"#ffd97f":"#ff8a99"; g.font="bold 32px sans-serif"; g.fillText(msg,W/2,H*0.4);
+    g.fillStyle="#fff"; g.font="18px sans-serif"; g.fillText("SCORE "+score.toLocaleString(),W/2,H*0.4+38);
+    const bkey={rush:"bestRush",endless:"bestEndless",ex:"bestEx"}[MODE]||"best";
+    g.fillStyle="#cfe"; g.font="13px sans-serif"; g.fillText("BEST  "+((SAVE[bkey]||0).toLocaleString()),W/2,H*0.4+60);
+    if(MODE==="endless"){ g.fillStyle="#ffd24a"; g.font="13px sans-serif"; g.fillText("到達 "+(endlessLoop+1)+"周目",W/2,H*0.4+80); }
+    g.fillStyle="#fff"; g.font="16px sans-serif"; g.fillText("R / タップでもう一度",W/2,H*0.4+108);
   }
 }
 
