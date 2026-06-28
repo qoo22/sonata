@@ -101,8 +101,7 @@ function stopBGM(){ try{ bgmEl.pause(); }catch(e){} }
 
 // ---------- input ----------
 const keys={};
-addEventListener("keydown",e=>{ const k=e.key.toLowerCase(); keys[k]=true;
-  if(["arrowup","arrowdown","arrowleft","arrowright"," "].includes(k))e.preventDefault(); audioInit();
+function uiKey(k){   // メニュー操作（キーボード＆十字パッド共通）
   if(state==="play"&&(k==="escape"||k==="p")){ state="pause"; pauseSel=0; }
   else if(state==="pause"){ if(k==="arrowup") pauseSel=(pauseSel-1+PAUSEITEMS.length)%PAUSEITEMS.length; else if(k==="arrowdown") pauseSel=(pauseSel+1)%PAUSEITEMS.length; else if(k==="z"||k==="enter") pauseSelect(); else if(k==="escape"||k==="p") state="play"; }
   else if(state==="settings"){ if(k==="arrowup") cfgRow=(cfgRow-1+CFGROWS.length)%CFGROWS.length; else if(k==="arrowdown") cfgRow=(cfgRow+1)%CFGROWS.length; else if(k==="arrowleft") cfgAdjust(-1); else if(k==="arrowright") cfgAdjust(1); else if(k==="z"||k==="enter"||k==="escape"||k==="x") cfgBack(); }
@@ -120,16 +119,25 @@ addEventListener("keydown",e=>{ const k=e.key.toLowerCase(); keys[k]=true;
   else if(state==="after"&&(k==="z"||k==="enter")) afterAdvance();
   else if(state==="ending"&&(k==="z"||k==="enter")) edAdvance();
   else if(state==="credits"&&(k==="z"||k==="enter")) state="result";
-  else if(state==="result"&&k==="r") startGame(); });
+  else if(state==="result"&&(k==="r"||k==="z"||k==="enter")) startGame();
+}
+addEventListener("keydown",e=>{ const k=e.key.toLowerCase(); keys[k]=true;
+  if(["arrowup","arrowdown","arrowleft","arrowright"," "].includes(k))e.preventDefault(); audioInit(); uiKey(k); });
 addEventListener("keyup",e=>{ keys[e.key.toLowerCase()]=false; });
 let pointer={active:false,x:0,y:0}, bombBtn=false, touchMode=false;
 let bombTouchId=-1, bombTap=false;
 // 画面から独立した方向コントローラー（仮想十字パッド）
-let padTouch=null, padVX=0, padVY=0, padKX=0, padKY=0;
+let padTouch=null, padVX=0, padVY=0, padKX=0, padKY=0, padNav=0;
 const PAD={cx:84, cy:H+(BAND?BAND*0.5:-74), r:62, dz:11};
 function inPad(p){ return BAND>0 ? (p.y>H+2 && p.x<W*0.58) : (p.y>H-156 && p.x<W*0.6); }
 function updatePad(p){ let dx=p.x-PAD.cx, dy=p.y-PAD.cy; const d=Math.hypot(dx,dy)||1, cl=Math.min(d,PAD.r); padKX=PAD.cx+dx/d*cl; padKY=PAD.cy+dy/d*cl;
-  if(d<PAD.dz){ padVX=0; padVY=0; } else { padVX=Math.max(-1,Math.min(1,dx/PAD.r)); padVY=Math.max(-1,Math.min(1,dy/PAD.r)); } }
+  if(d<PAD.dz){ padVX=0; padVY=0; } else { padVX=Math.max(-1,Math.min(1,dx/PAD.r)); padVY=Math.max(-1,Math.min(1,dy/PAD.r)); }
+  // メニューでは十字キーとして使う（倒した瞬間に1回＝エッジトリガ）
+  if(state!=="play"){ let dir=0;
+    if(Math.abs(padVY)>=Math.abs(padVX)){ if(padVY<=-0.55)dir="arrowup"; else if(padVY>=0.55)dir="arrowdown"; }
+    else { if(padVX<=-0.55)dir="arrowleft"; else if(padVX>=0.55)dir="arrowright"; }
+    if(dir&&dir!==padNav) uiKey(dir); padNav=dir;
+  } else padNav=0; }
 function cpos(ev){ const r=cv.getBoundingClientRect(),sx=W/r.width,sy=CANVAS_H/r.height;
   const cx=(ev.touches?ev.touches[0].clientX:ev.clientX),cy=(ev.touches?ev.touches[0].clientY:ev.clientY);
   return {x:(cx-r.left)*sx,y:(cy-r.top)*sy}; }
@@ -156,7 +164,11 @@ function onMouseUp(){ pointer.active=false; bombBtn=false; }
 // ---- タッチ（モバイル：相対トラックパッド＋マルチタップ・ボム）----
 function onTouchStart(ev){ audioInit(); touchMode=true;
   for(const t of ev.changedTouches){ const p=ctp(t);
-    if(state!=="play"){ tapMenu(p); continue; }
+    if(state!=="play"){   // メニュー：十字パッドで選択／決定ボタンでZ／その他はタップ選択
+      if(MOBILE&&inPad(p)&&padTouch===null){ padTouch={id:t.identifier}; padNav=0; updatePad(p); }
+      else if(MOBILE&&inBombBtn(p)){ uiKey("z"); }
+      else tapMenu(p);
+      continue; }
     if(p.x>W-44&&p.y<44){ state="pause"; pauseSel=0; continue; }   // ポーズボタン
     if(inBombBtn(p)){ bombBtn=true; bombTouchId=t.identifier; }
     else if(inPad(p) && padTouch===null){ padTouch={id:t.identifier}; updatePad(p); }   // 方向コントローラー
@@ -926,7 +938,8 @@ function draw(){
 
   if(sh) g.translate(-sx,-sy);   // 揺れ解除（オーバーレイは揺らさない）
   // 操作パネル（画面下のバンド：十字パッド＋ボム）— プレイ中のみ・揺れの影響なし
-  if(BAND>0 && state==="play"){
+  if(BAND>0){
+    const isPlay=(state==="play");
     g.globalAlpha=0.5; g.fillStyle="rgba(16,28,38,0.9)"; g.beginPath(); g.arc(PAD.cx,PAD.cy,PAD.r,0,7); g.fill();
     g.globalAlpha=0.7; g.strokeStyle="rgba(127,233,224,0.85)"; g.lineWidth=2; g.beginPath(); g.arc(PAD.cx,PAD.cy,PAD.r,0,7); g.stroke();
     g.globalAlpha=0.7; g.fillStyle="rgba(200,245,240,0.9)";
@@ -935,10 +948,13 @@ function draw(){
     const kx=padTouch?padKX:PAD.cx, ky=padTouch?padKY:PAD.cy;
     g.globalAlpha=0.95; g.fillStyle=(CHAR?CHAR.col:"#7fe9e0"); g.beginPath(); g.arc(kx,ky,19,0,7); g.fill();
     g.globalAlpha=0.9; g.fillStyle="#0a141e"; g.beginPath(); g.arc(kx,ky,8,0,7); g.fill(); g.globalAlpha=1;
-    const cbx=W-56,cby=PAD.cy; g.globalAlpha=player.bombs>0?0.95:0.34;
+    const cbx=W-56,cby=PAD.cy; g.globalAlpha=(isPlay&&player.bombs<=0)?0.34:0.95;
     g.fillStyle="rgba(24,28,46,0.92)"; g.beginPath(); g.arc(cbx,cby,40,0,7); g.fill();
     g.strokeStyle=(CHAR?CHAR.col:"#ffd24a"); g.lineWidth=2.5; g.stroke();
-    g.fillStyle="#fff"; g.textAlign="center"; g.font="bold 15px sans-serif"; g.fillText("BOMB",cbx,cby-2); g.font="12px sans-serif"; g.fillText("×"+player.bombs,cbx,cby+15); g.globalAlpha=1; g.textAlign="left";
+    g.fillStyle="#fff"; g.textAlign="center";
+    if(isPlay){ g.font="bold 15px sans-serif"; g.fillText("BOMB",cbx,cby-2); g.font="12px sans-serif"; g.fillText("×"+player.bombs,cbx,cby+15); }
+    else { g.font="bold 17px sans-serif"; g.fillText("決定",cbx,cby+6); }
+    g.globalAlpha=1; g.textAlign="left";
   }
   g.textAlign="center";
   if(state==="prologue"){
