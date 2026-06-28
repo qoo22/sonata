@@ -2,15 +2,22 @@
 <html lang="ja">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#05080f">
+<meta name="format-detection" content="telephone=no">
 <title>燐音郷 ～ Phosphorescent Sonata</title>
 <style>
-  html,body{margin:0;height:100%;background:#05080f;overflow:hidden;
+  html,body{margin:0;height:100%;width:100%;background:#05080f;overflow:hidden;position:fixed;inset:0;
     font-family:"Hiragino Sans","Yu Gothic","Noto Sans CJK JP",sans-serif;
-    -webkit-user-select:none;user-select:none;touch-action:none;}
-  #wrap{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;}
-  canvas{background:#070b16;box-shadow:0 0 40px #0bd6d633;border-radius:6px;max-width:100%;max-height:100%;}
-  #hint{position:fixed;bottom:6px;left:0;right:0;text-align:center;color:#6aa;font-size:12px;}
+    -webkit-user-select:none;user-select:none;-webkit-touch-callout:none;touch-action:none;overscroll-behavior:none;-webkit-tap-highlight-color:transparent;}
+  #wrap{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;
+    padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);box-sizing:border-box;}
+  canvas{background:#070b16;box-shadow:0 0 40px #0bd6d633;border-radius:6px;max-width:100%;max-height:100%;display:block;touch-action:none;}
+  #hint{position:fixed;bottom:6px;left:0;right:0;text-align:center;color:#6aa;font-size:12px;pointer-events:none;}
+  @media (max-width:760px){ #hint{display:none;} }
 </style>
 </head>
 <body>
@@ -21,6 +28,8 @@
 "use strict";
 const cv=document.getElementById("c"), g=cv.getContext("2d");
 const W=480,H=640, HITR=2.4, GRAZER=15;
+const DPR=Math.max(1,Math.min(2, window.devicePixelRatio||1));   // Retina対応（くっきり描画、負荷は2倍まで）
+cv.width=Math.round(W*DPR); cv.height=Math.round(H*DPR); g.imageSmoothingEnabled=true;
 
 // ---------- images ----------
 const IMG={};
@@ -107,7 +116,13 @@ addEventListener("keydown",e=>{ const k=e.key.toLowerCase(); keys[k]=true;
   else if(state==="result"&&k==="r") startGame(); });
 addEventListener("keyup",e=>{ keys[e.key.toLowerCase()]=false; });
 let pointer={active:false,x:0,y:0}, bombBtn=false, touchMode=false;
-let moveTouch=null, bombTouchId=-1, bombTap=false;   // 相対トラックパッド／2本目タップ＝ボム
+let bombTouchId=-1, bombTap=false;
+// 画面から独立した方向コントローラー（仮想十字パッド）
+let padTouch=null, padVX=0, padVY=0, padKX=0, padKY=0;
+const PAD={cx:72, cy:H-74, r:58, dz:10};
+function inPad(p){ return p.y>H-156 && p.x<W*0.6; }
+function updatePad(p){ let dx=p.x-PAD.cx, dy=p.y-PAD.cy; const d=Math.hypot(dx,dy)||1, cl=Math.min(d,PAD.r); padKX=PAD.cx+dx/d*cl; padKY=PAD.cy+dy/d*cl;
+  if(d<PAD.dz){ padVX=0; padVY=0; } else { padVX=Math.max(-1,Math.min(1,dx/PAD.r)); padVY=Math.max(-1,Math.min(1,dy/PAD.r)); } }
 function cpos(ev){ const r=cv.getBoundingClientRect(),sx=W/r.width,sy=H/r.height;
   const cx=(ev.touches?ev.touches[0].clientX:ev.clientX),cy=(ev.touches?ev.touches[0].clientY:ev.clientY);
   return {x:(cx-r.left)*sx,y:(cy-r.top)*sy}; }
@@ -136,14 +151,14 @@ function onTouchStart(ev){ audioInit(); touchMode=true;
     if(state!=="play"){ tapMenu(p); continue; }
     if(p.x>W-44&&p.y<44){ state="pause"; pauseSel=0; continue; }   // ポーズボタン
     if(inBombBtn(p)){ bombBtn=true; bombTouchId=t.identifier; }
-    else if(moveTouch===null){ moveTouch={id:t.identifier,lx:p.x,ly:p.y,dx:0,dy:0}; }
-    else { bombTap=true; }   // 2本目以降のタップ＝移動しながらでもボム発動
+    else if(inPad(p) && padTouch===null){ padTouch={id:t.identifier}; updatePad(p); }   // 方向コントローラー
+    else { bombTap=true; }   // パッド外タップ＝移動しながらでもボム発動
   }
   ev.preventDefault(); }
-function onTouchMove(ev){ if(!moveTouch)return;
-  for(const t of ev.changedTouches){ if(t.identifier===moveTouch.id){ const p=ctp(t); moveTouch.dx+=p.x-moveTouch.lx; moveTouch.dy+=p.y-moveTouch.ly; moveTouch.lx=p.x; moveTouch.ly=p.y; } }
+function onTouchMove(ev){ if(!padTouch)return;
+  for(const t of ev.changedTouches){ if(t.identifier===padTouch.id) updatePad(ctp(t)); }
   ev.preventDefault(); }
-function onTouchEnd(ev){ for(const t of ev.changedTouches){ if(moveTouch&&t.identifier===moveTouch.id) moveTouch=null; if(t.identifier===bombTouchId){ bombBtn=false; bombTouchId=-1; } } ev.preventDefault(); }
+function onTouchEnd(ev){ for(const t of ev.changedTouches){ if(padTouch&&t.identifier===padTouch.id){ padTouch=null; padVX=0; padVY=0; } if(t.identifier===bombTouchId){ bombBtn=false; bombTouchId=-1; } } ev.preventDefault(); }
 cv.addEventListener("mousedown",onMouseDown); cv.addEventListener("mousemove",onMouseMove); addEventListener("mouseup",onMouseUp);
 cv.addEventListener("touchstart",onTouchStart,{passive:false}); cv.addEventListener("touchmove",onTouchMove,{passive:false}); addEventListener("touchend",onTouchEnd,{passive:false}); addEventListener("touchcancel",onTouchEnd,{passive:false});
 
@@ -665,7 +680,7 @@ function update(dt){
   if(keys["arrowleft"]||keys["a"])mx-=1; if(keys["arrowright"]||keys["d"])mx+=1;
   if(keys["arrowup"]||keys["w"])my-=1; if(keys["arrowdown"]||keys["s"])my+=1;
   let appliedX=0, movingNow=false;
-  if(moveTouch){ const sn=CFG().sens, dx=moveTouch.dx*sn, dy=moveTouch.dy*sn; player.x+=dx; player.y+=dy; appliedX=dx; movingNow=(Math.abs(dx)+Math.abs(dy)>0.3); moveTouch.dx=0; moveTouch.dy=0; }
+  if(padTouch){ const spd=(player.focus?105:252)*dt*CFG().sens; player.x+=padVX*spd; player.y+=padVY*spd; appliedX=padVX; movingNow=(Math.hypot(padVX,padVY)>0.05); }
   else if(pointer.active){ const dx=pointer.x-player.x,dy=pointer.y-player.y,d=Math.hypot(dx,dy);
     if(d>1){ const mv=Math.min(d,(player.focus?105:252)*dt); player.x+=dx/d*mv; player.y+=dy/d*mv; } appliedX=dx; movingNow=d>2; }
   else { const m=Math.hypot(mx,my)||1,spd=(player.focus?105:252)*dt; player.x+=mx/m*spd; player.y+=my/m*spd; appliedX=mx; movingNow=(!!mx||!!my); }
@@ -743,6 +758,7 @@ function collide(){ const px=player.x,py=player.y;
 
 // ---------- render ----------
 function draw(){
+  g.setTransform(DPR,0,0,DPR,0,0);   // 毎フレーム基準変換をDPRにリセット
   g.clearRect(0,0,W,H);
   // 撃破カットイン中だけ強め、通常プレイ中の画面揺れは控えめ（操作性優先）
   const shScale=(defeatT>0)?2.4:1.2;
@@ -851,15 +867,19 @@ function draw(){
       // テキスト
       g.globalAlpha=al; g.fillStyle="#fff"; g.fillText(shown,bx+18,by+bh/2+6);
       g.globalAlpha=1; }
-    // タッチUI（画面下の移動パッド＋右下ボムボタン）
+    // タッチUI（画面から独立した方向コントローラー＋右下ボムボタン）
     if(touchMode){
-      // 画面下いっぱいの移動パッド（右側のボムボタン分だけ空ける）
-      const padX=8, padH=82, padY=H-padH-8, padW=W-104;
-      g.globalAlpha=0.28; g.fillStyle="rgba(18,40,46,0.7)"; rrect(padX,padY,padW,padH,14); g.fill();
-      g.globalAlpha=0.55; g.strokeStyle="rgba(127,233,224,0.75)"; g.lineWidth=1.5; rrect(padX,padY,padW,padH,14); g.stroke();
-      g.globalAlpha=0.8; g.fillStyle="rgba(190,242,238,0.9)"; g.font="12px sans-serif"; g.textAlign="center"; g.fillText("移動パッド  ドラッグで移動",padX+padW/2,padY+padH/2+5);
-      if(moveTouch){ g.fillStyle=(CHAR?CHAR.col:"#7fe9e0"); g.globalAlpha=0.85; g.beginPath(); g.arc(padX+padW/2,padY+18,11,0,7); g.fill(); }
-      g.globalAlpha=1; g.textAlign="left";
+      // 十字パッドの台座
+      g.globalAlpha=0.34; g.fillStyle="rgba(16,28,38,0.85)"; g.beginPath(); g.arc(PAD.cx,PAD.cy,PAD.r,0,7); g.fill();
+      g.globalAlpha=0.55; g.strokeStyle="rgba(127,233,224,0.8)"; g.lineWidth=2; g.beginPath(); g.arc(PAD.cx,PAD.cy,PAD.r,0,7); g.stroke();
+      // 4方向の矢印
+      g.globalAlpha=0.6; g.fillStyle="rgba(200,245,240,0.85)";
+      const tri=(ax,ay,rot)=>{ g.save(); g.translate(ax,ay); g.rotate(rot); g.beginPath(); g.moveTo(0,-7); g.lineTo(6,4); g.lineTo(-6,4); g.closePath(); g.fill(); g.restore(); };
+      tri(PAD.cx,PAD.cy-PAD.r+13,0); tri(PAD.cx,PAD.cy+PAD.r-13,Math.PI); tri(PAD.cx-PAD.r+13,PAD.cy,-Math.PI/2); tri(PAD.cx+PAD.r-13,PAD.cy,Math.PI/2);
+      // ノブ
+      const kx=padTouch?padKX:PAD.cx, ky=padTouch?padKY:PAD.cy;
+      g.globalAlpha=0.92; g.fillStyle=(CHAR?CHAR.col:"#7fe9e0"); g.beginPath(); g.arc(kx,ky,17,0,7); g.fill();
+      g.globalAlpha=0.9; g.fillStyle="#0a141e"; g.beginPath(); g.arc(kx,ky,7,0,7); g.fill(); g.globalAlpha=1;
       // ボムボタン（右下）
       const cbx=W-50,cby=H-50; g.globalAlpha=player.bombs>0?0.92:0.32;
       g.fillStyle="rgba(20,24,40,0.78)"; g.beginPath(); g.arc(cbx,cby,34,0,7); g.fill();
