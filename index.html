@@ -13,9 +13,9 @@
   html,body{margin:0;height:100%;width:100%;background:#05080f;overflow:hidden;position:fixed;inset:0;
     font-family:"Hiragino Sans","Yu Gothic","Noto Sans CJK JP",sans-serif;
     -webkit-user-select:none;user-select:none;-webkit-touch-callout:none;touch-action:none;overscroll-behavior:none;-webkit-tap-highlight-color:transparent;}
-  #wrap{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;
+  #wrap{position:fixed;inset:0;display:flex;align-items:flex-start;justify-content:center;
     padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);box-sizing:border-box;}
-  canvas{background:#070b16;box-shadow:0 0 40px #0bd6d633;border-radius:6px;max-width:100%;max-height:100%;display:block;touch-action:none;}
+  canvas{background:#070b16;box-shadow:0 0 30px #0bd6d622;max-width:100%;max-height:100%;display:block;touch-action:none;}
   #hint{position:fixed;bottom:6px;left:0;right:0;text-align:center;color:#6aa;font-size:12px;pointer-events:none;}
   @media (max-width:760px){ #hint{display:none;} }
 </style>
@@ -29,12 +29,19 @@
 const cv=document.getElementById("c"), g=cv.getContext("2d");
 const W=480,H=640, HITR=2.4, GRAZER=15;
 const DPR=Math.max(1,Math.min(2, window.devicePixelRatio||1));   // Retina対応（くっきり描画、負荷は2倍まで）
-cv.width=Math.round(W*DPR); cv.height=Math.round(H*DPR); g.imageSmoothingEnabled=true;
+// iPhone / iPad / Android のときだけ操作パネルを出す（PC・その他では非表示）
+const _UA=(navigator.userAgent||"");
+const IS_IOS=/iPad|iPhone|iPod/.test(_UA)||(/Mac/.test(_UA)&&(navigator.maxTouchPoints||0)>1);
+const IS_ANDROID=/Android/.test(_UA);
+const MOBILE=IS_IOS||IS_ANDROID;
+const BAND=MOBILE?152:0;            // プレイ領域(640)の下に付ける操作パネル（パッド＆ボムを置く）
+const CANVAS_H=H+BAND;
+cv.width=Math.round(W*DPR); cv.height=Math.round(CANVAS_H*DPR); g.imageSmoothingEnabled=true;
 
 // ---------- images ----------
 const IMG={};
 function loadImg(n){ const i=new Image(); i.src="assets/"+n+".png"; IMG[n]=i; }
-["logo","kotone","bg1","bg2","bg3","bg4","bg5","bg6","boss1","boss2","boss3","boss4","boss5","boss6",
+["logo","kotone","zako","bg1","bg2","bg3","bg4","bg5","bg6","boss1","boss2","boss3","boss4","boss5","boss6",
  "cut1","cut2","cut3","cut4","cut5","cut6",
  "pc_akari","pc_tsumugi","pc_nagisa","ed_kotone","ed_akari","ed_tsumugi","ed_nagisa",
  "bex1_n","bex1_j","bex1_a","bex2_n","bex2_j","bex2_a","bex3_n","bex3_j","bex3_a",
@@ -119,17 +126,18 @@ let pointer={active:false,x:0,y:0}, bombBtn=false, touchMode=false;
 let bombTouchId=-1, bombTap=false;
 // 画面から独立した方向コントローラー（仮想十字パッド）
 let padTouch=null, padVX=0, padVY=0, padKX=0, padKY=0;
-const PAD={cx:72, cy:H-74, r:58, dz:10};
-function inPad(p){ return p.y>H-156 && p.x<W*0.6; }
+const PAD={cx:84, cy:H+(BAND?BAND*0.5:-74), r:62, dz:11};
+function inPad(p){ return BAND>0 ? (p.y>H+2 && p.x<W*0.58) : (p.y>H-156 && p.x<W*0.6); }
 function updatePad(p){ let dx=p.x-PAD.cx, dy=p.y-PAD.cy; const d=Math.hypot(dx,dy)||1, cl=Math.min(d,PAD.r); padKX=PAD.cx+dx/d*cl; padKY=PAD.cy+dy/d*cl;
   if(d<PAD.dz){ padVX=0; padVY=0; } else { padVX=Math.max(-1,Math.min(1,dx/PAD.r)); padVY=Math.max(-1,Math.min(1,dy/PAD.r)); } }
-function cpos(ev){ const r=cv.getBoundingClientRect(),sx=W/r.width,sy=H/r.height;
+function cpos(ev){ const r=cv.getBoundingClientRect(),sx=W/r.width,sy=CANVAS_H/r.height;
   const cx=(ev.touches?ev.touches[0].clientX:ev.clientX),cy=(ev.touches?ev.touches[0].clientY:ev.clientY);
   return {x:(cx-r.left)*sx,y:(cy-r.top)*sy}; }
-function ctp(t){ const r=cv.getBoundingClientRect(),sx=W/r.width,sy=H/r.height; return {x:(t.clientX-r.left)*sx,y:(t.clientY-r.top)*sy}; }
-function inBombBtn(p){ return p.x>W-90&&p.y>H-90; }
+function ctp(t){ const r=cv.getBoundingClientRect(),sx=W/r.width,sy=CANVAS_H/r.height; return {x:(t.clientX-r.left)*sx,y:(t.clientY-r.top)*sy}; }
+function inBombBtn(p){ return BAND>0 ? (p.x>W-104&&p.y>H+2) : (p.x>W-90&&p.y>H-90); }
 // メニュー/会話の送り（マウス・最初のタッチ共通）
 function tapMenu(p){
+  if(p.y>H) return;   // 操作パネル領域のタップはメニューに干渉させない
   if(state==="title"){ const m=titleMenu(),baseY=H*0.46,step=H*0.062; let idx=Math.round((p.y-baseY+step*0.5)/step); idx=Math.max(0,Math.min(m.length-1,idx)); titleSel=idx; const sel=m[idx][0]; if(sel==="records"){ state="records"; musicSel=0; } else { MODE=sel; state="select"; } }
   else if(state==="records"){ if(p.y<H*0.12){ stopBGM(); state="title"; } else if(p.x<W*0.3) musicSel=(musicSel-1+MUSIC.length)%MUSIC.length; else if(p.x>W*0.7) musicSel=(musicSel+1)%MUSIC.length; else playBGM(MUSIC[musicSel].file,false); }
   else if(state==="pause"){ const baseY=H*0.44,step=36; let idx=Math.round((p.y-baseY+step*0.5)/step); idx=Math.max(0,Math.min(PAUSEITEMS.length-1,idx)); pauseSel=idx; pauseSelect(); }
@@ -607,11 +615,11 @@ function startRun(mode){ MODE=mode; audioInit(); if(!CHAR) CHAR=CHARS[selIdx]; s
   freeze=0; shake=0; parts=[]; whiteFlash=0; hurtFlash=0; grazeMul=1; proLine=0; proChars=0; stopBGM();
   if(mode==="story"){ state="prologue"; } else { loadStage(0); } }   // 他モードは前置き無しで即開始
 function loadStage(i){ ST=(MODE==="ex")?EXSTAGE:STAGES[i]; bullets=[]; items=[]; enemies=[]; waveOn=false; boss=newBoss(); cutinT=0; introStep=0; introChars=0; introVoiceMark=0;
-  freeze=0; shake=0; parts=[]; whiteFlash=0; hurtFlash=0; grazeMul=1; grazeMulT=0; defeatT=0; bgmHot=false; bossShoutT=0; playBGM(ST.bgm);
-  if(MODE==="story"){ state="intro"; } else { startPlayNoWave(); } }   // ストーリーのみ会話、他は即戦闘
+  freeze=0; shake=0; parts=[]; whiteFlash=0; hurtFlash=0; grazeMul=1; grazeMulT=0; defeatT=0; bgmHot=false; bossShoutT=0; stopBGM();
+  if(MODE==="story"){ state="intro"; } else { startPlayNoWave(); } }   // ストーリーのみ会話（BGMは戦闘開始時）、他は即戦闘
 function startPlay(){ state="play"; beatTime=0; beatCount=0; player.inv=Math.max(player.inv,1.2); runHitStage=false; runBombStage=false;
-  enemies=[]; waveOn=true; waveT=WAVE_TIME; waveSpawnT=0.4; waveIdx=0; }   // 道中スタート（ボスはウェーブ後）
-function startPlayNoWave(){ state="play"; beatTime=0; beatCount=0; player.inv=Math.max(player.inv,1.2); runHitStage=false; runBombStage=false; enemies=[]; waveOn=false; bossNext(); }   // 道中なし
+  enemies=[]; waveOn=true; waveT=WAVE_TIME; waveSpawnT=0.4; waveIdx=0; if(ST) playBGM(ST.bgm); }   // 会話の後＝戦闘開始でBGMスタート（道中）
+function startPlayNoWave(){ state="play"; beatTime=0; beatCount=0; player.inv=Math.max(player.inv,1.2); runHitStage=false; runBombStage=false; enemies=[]; waveOn=false; if(ST) playBGM(ST.bgm); bossNext(); }   // 道中なし＋BGMスタート
 function commitScore(){ const key=MODE==="rush"?"bestRush":MODE==="endless"?"bestEndless":MODE==="ex"?"bestEx":"best"; if(score>(SAVE[key]||0)) SAVE[key]=score; saveSave(); }
 function bossNext(){ if(boss.run) boss.run=null; clearEnemy(); boss.idx++;
   if(boss.idx>=ST.phases.length){ boss.defeated=true; return; }
@@ -759,7 +767,8 @@ function collide(){ const px=player.x,py=player.y;
 // ---------- render ----------
 function draw(){
   g.setTransform(DPR,0,0,DPR,0,0);   // 毎フレーム基準変換をDPRにリセット
-  g.clearRect(0,0,W,H);
+  g.clearRect(0,0,W,CANVAS_H);
+  if(BAND>0){ g.fillStyle="#070a12"; g.fillRect(0,H,W,BAND); }   // 操作パネルの下地
   // 撃破カットイン中だけ強め、通常プレイ中の画面揺れは控えめ（操作性優先）
   const shScale=(defeatT>0)?2.4:1.2;
   const sh=(state==="play"&&shake>0)?Math.min(shake,1.6)*CFG().shake:0, sx=(Math.random()*2-1)*sh*shScale, sy=(Math.random()*2-1)*sh*shScale;
@@ -785,11 +794,13 @@ function draw(){
         g.globalAlpha=1; g.restore(); }
       g.globalCompositeOperation="lighter"; g.beginPath(); g.fillStyle="rgba(160,220,230,0.14)"; g.arc(bX,bY+lift,38,0,7); g.fill(); g.globalCompositeOperation="source-over";
     }
-    // 雑魚（道中）
-    for(const e of enemies){ if(e.dead)continue;
-      g.globalCompositeOperation="lighter"; g.globalAlpha=0.9; g.fillStyle=e.col; g.beginPath(); g.arc(e.x,e.y,10,0,7); g.fill();
-      g.globalCompositeOperation="source-over"; g.globalAlpha=1; g.fillStyle="#0a1420"; g.beginPath(); g.arc(e.x,e.y,5,0,7); g.fill();
-      g.fillStyle="#fff"; g.beginPath(); g.arc(e.x-1.5,e.y-1.5,1.8,0,7); g.fill(); }
+    // 雑魚（道中）＝生成スプライト＋ステージ色のグロー
+    { const zk=IMG.zako, zr=ready(zk), bob=performance.now()/260;
+      for(const e of enemies){ if(e.dead)continue; const fl=Math.sin(bob+e.x*0.05);
+        g.globalCompositeOperation="lighter"; g.globalAlpha=0.5; g.fillStyle=e.col; g.beginPath(); g.arc(e.x,e.y,13,0,7); g.fill();
+        g.globalCompositeOperation="source-over"; g.globalAlpha=1;
+        if(zr){ const s=30+fl*1.5; g.drawImage(zk, e.x-s/2, e.y-s/2, s, s); }
+        else { g.fillStyle=e.col; g.beginPath(); g.arc(e.x,e.y,10,0,7); g.fill(); g.fillStyle="#0a1420"; g.beginPath(); g.arc(e.x,e.y,5,0,7); g.fill(); } } }
     // bullets
     g.globalCompositeOperation="lighter";
     for(const b of bullets){ if(b.dead)continue; g.beginPath(); g.fillStyle=b.col; g.globalAlpha=b.enemy?0.95:0.9; g.arc(b.x,b.y,b.r+(b.enemy?1.5:0),0,7); g.fill();
@@ -867,25 +878,7 @@ function draw(){
       // テキスト
       g.globalAlpha=al; g.fillStyle="#fff"; g.fillText(shown,bx+18,by+bh/2+6);
       g.globalAlpha=1; }
-    // タッチUI（画面から独立した方向コントローラー＋右下ボムボタン）
-    if(touchMode){
-      // 十字パッドの台座
-      g.globalAlpha=0.34; g.fillStyle="rgba(16,28,38,0.85)"; g.beginPath(); g.arc(PAD.cx,PAD.cy,PAD.r,0,7); g.fill();
-      g.globalAlpha=0.55; g.strokeStyle="rgba(127,233,224,0.8)"; g.lineWidth=2; g.beginPath(); g.arc(PAD.cx,PAD.cy,PAD.r,0,7); g.stroke();
-      // 4方向の矢印
-      g.globalAlpha=0.6; g.fillStyle="rgba(200,245,240,0.85)";
-      const tri=(ax,ay,rot)=>{ g.save(); g.translate(ax,ay); g.rotate(rot); g.beginPath(); g.moveTo(0,-7); g.lineTo(6,4); g.lineTo(-6,4); g.closePath(); g.fill(); g.restore(); };
-      tri(PAD.cx,PAD.cy-PAD.r+13,0); tri(PAD.cx,PAD.cy+PAD.r-13,Math.PI); tri(PAD.cx-PAD.r+13,PAD.cy,-Math.PI/2); tri(PAD.cx+PAD.r-13,PAD.cy,Math.PI/2);
-      // ノブ
-      const kx=padTouch?padKX:PAD.cx, ky=padTouch?padKY:PAD.cy;
-      g.globalAlpha=0.92; g.fillStyle=(CHAR?CHAR.col:"#7fe9e0"); g.beginPath(); g.arc(kx,ky,17,0,7); g.fill();
-      g.globalAlpha=0.9; g.fillStyle="#0a141e"; g.beginPath(); g.arc(kx,ky,7,0,7); g.fill(); g.globalAlpha=1;
-      // ボムボタン（右下）
-      const cbx=W-50,cby=H-50; g.globalAlpha=player.bombs>0?0.92:0.32;
-      g.fillStyle="rgba(20,24,40,0.78)"; g.beginPath(); g.arc(cbx,cby,34,0,7); g.fill();
-      g.strokeStyle=(CHAR?CHAR.col:"#ffd24a"); g.lineWidth=2; g.stroke();
-      g.fillStyle="#fff"; g.textAlign="center"; g.font="bold 13px sans-serif"; g.fillText("BOMB",cbx,cby-1); g.font="11px sans-serif"; g.fillText("×"+player.bombs,cbx,cby+13); g.globalAlpha=1; g.textAlign="left";
-    }
+    // （操作パネル＝十字パッド＋ボムは画面下のバンドに、揺れの影響を受けない末尾で描画）
     // ポーズボタン（右上）
     g.fillStyle="rgba(20,24,40,0.55)"; g.beginPath(); g.arc(W-22,22,16,0,7); g.fill();
     g.fillStyle="#cfe"; g.fillRect(W-27,15,4,14); g.fillRect(W-20,15,4,14);
@@ -932,6 +925,21 @@ function draw(){
   }
 
   if(sh) g.translate(-sx,-sy);   // 揺れ解除（オーバーレイは揺らさない）
+  // 操作パネル（画面下のバンド：十字パッド＋ボム）— プレイ中のみ・揺れの影響なし
+  if(BAND>0 && state==="play"){
+    g.globalAlpha=0.5; g.fillStyle="rgba(16,28,38,0.9)"; g.beginPath(); g.arc(PAD.cx,PAD.cy,PAD.r,0,7); g.fill();
+    g.globalAlpha=0.7; g.strokeStyle="rgba(127,233,224,0.85)"; g.lineWidth=2; g.beginPath(); g.arc(PAD.cx,PAD.cy,PAD.r,0,7); g.stroke();
+    g.globalAlpha=0.7; g.fillStyle="rgba(200,245,240,0.9)";
+    const tri=(ax,ay,rot)=>{ g.save(); g.translate(ax,ay); g.rotate(rot); g.beginPath(); g.moveTo(0,-8); g.lineTo(7,5); g.lineTo(-7,5); g.closePath(); g.fill(); g.restore(); };
+    tri(PAD.cx,PAD.cy-PAD.r+14,0); tri(PAD.cx,PAD.cy+PAD.r-14,Math.PI); tri(PAD.cx-PAD.r+14,PAD.cy,-Math.PI/2); tri(PAD.cx+PAD.r-14,PAD.cy,Math.PI/2);
+    const kx=padTouch?padKX:PAD.cx, ky=padTouch?padKY:PAD.cy;
+    g.globalAlpha=0.95; g.fillStyle=(CHAR?CHAR.col:"#7fe9e0"); g.beginPath(); g.arc(kx,ky,19,0,7); g.fill();
+    g.globalAlpha=0.9; g.fillStyle="#0a141e"; g.beginPath(); g.arc(kx,ky,8,0,7); g.fill(); g.globalAlpha=1;
+    const cbx=W-56,cby=PAD.cy; g.globalAlpha=player.bombs>0?0.95:0.34;
+    g.fillStyle="rgba(24,28,46,0.92)"; g.beginPath(); g.arc(cbx,cby,40,0,7); g.fill();
+    g.strokeStyle=(CHAR?CHAR.col:"#ffd24a"); g.lineWidth=2.5; g.stroke();
+    g.fillStyle="#fff"; g.textAlign="center"; g.font="bold 15px sans-serif"; g.fillText("BOMB",cbx,cby-2); g.font="12px sans-serif"; g.fillText("×"+player.bombs,cbx,cby+15); g.globalAlpha=1; g.textAlign="left";
+  }
   g.textAlign="center";
   if(state==="prologue"){
     g.fillStyle="#05080f"; g.fillRect(0,0,W,H);
