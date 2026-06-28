@@ -4,7 +4,8 @@ import io, numpy as np
 from huggingface_hub import InferenceClient
 from PIL import Image
 
-TOKEN="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"
+import os
+TOKEN=os.environ.get("HF_TOKEN","")   # トークンはコードに直接書かず環境変数から読む
 client=InferenceClient(token=TOKEN)
 prompt=("a small cute floating spirit wisp enemy for a danmaku shooter, single glowing "
         "pale cyan-white orb creature with tiny translucent wings and a soft musical-note glow, "
